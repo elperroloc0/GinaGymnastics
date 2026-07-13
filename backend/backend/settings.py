@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
 load_dotenv(BASE_DIR / ".env")
 
 
@@ -27,11 +28,23 @@ if not SECRET_KEY:
     SECRET_KEY = "django-insecure-dev-only-DO-NOT-USE-IN-PRODUCTION"
 
 
-ALLOWED_HOSTS = []
+_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS")
+if _allowed_hosts_env is None:
+    _allowed_hosts_env = "localhost, 127.0.0.1" if DEBUG else ""
+
+ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+
+if not DEBUG and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured("ALLOWED_HOSTS must be set when DEBUG=False")
+
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhosts", "127.0.0.1", "testserver")
+]
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -39,6 +52,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'accounts.apps.AccountsConfig',
+    'phonenumber_field',
 ]
 
 MIDDLEWARE = [
@@ -82,8 +97,13 @@ DATABASES = {
 }
 
 
+# custom user model access
+AUTH_USER_MODEL = 'accounts.User'
+
+
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -106,7 +126,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 
