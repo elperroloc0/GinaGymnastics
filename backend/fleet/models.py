@@ -25,6 +25,7 @@ class GeoFence(models.Model):
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
     radius = models.PositiveIntegerField(help_text="meters")
     traccar_id = models.IntegerField(unique=True)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self) -> str:
         return self.name

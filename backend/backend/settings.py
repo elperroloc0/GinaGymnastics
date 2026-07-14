@@ -57,6 +57,8 @@ INSTALLED_APPS = [
 
     'fleet.apps.FleetConfig',
 
+    'tracking.app.TrackingConfig',
+
     # third party model field for phone #:
     'phonenumber_field',
 ]
