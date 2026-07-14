@@ -52,7 +52,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
     'accounts.apps.AccountsConfig',
+
+    'fleet.apps.FleetConfig',
+
+    # third party model field for phone #:
     'phonenumber_field',
 ]
 
