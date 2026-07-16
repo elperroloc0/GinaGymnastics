@@ -26,7 +26,7 @@ def traccar_webhook(request):
         return JsonResponse({"status": "ignored"})
 
     arrival_type = TYPE_MAP[event_type]
-    print(arrival_type)
+    # print(arrival_type)
 
     imei = data.get("device", {}).get("uniqueId")
     try:
@@ -37,7 +37,7 @@ def traccar_webhook(request):
     traccar_fence_id = data.get("event", {}).get("geofenceId")
     try:
         traccar_fence = GeoFence.objects.get(traccar_id=traccar_fence_id)
-        print(traccar_fence)
+        # print(traccar_fence)
     except GeoFence.DoesNotExist:
         return JsonResponse({"status": "unknown geo fence"})
 
@@ -48,7 +48,7 @@ def traccar_webhook(request):
 
         try:
             event_time = parse_datetime(time)
-            print(event_time)
+            # print(event_time)
         except TypeError:
             return JsonResponse({"status": "Not valid datetime"})
 
