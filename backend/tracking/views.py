@@ -56,7 +56,7 @@ def traccar_webhook(request):
 
     # print(van, event_type, geo_fence, time)
 
-    return JsonResponse({"van": imei, "event_type": event_type, "geo_fence": traccar_fence_id, "time": event_time})
+    return JsonResponse({"status": "ok"})
 
 
 
