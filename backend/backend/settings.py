@@ -30,7 +30,7 @@ if not SECRET_KEY:
 
 _allowed_hosts_env = os.environ.get("ALLOWED_HOSTS")
 if _allowed_hosts_env is None:
-    _allowed_hosts_env = "localhost, 127.0.0.1" if DEBUG else ""
+    _allowed_hosts_env = "localhost, 127.0.0.1," if DEBUG else ""
 
 ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 
