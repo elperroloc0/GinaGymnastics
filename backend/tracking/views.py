@@ -1,4 +1,5 @@
 import json
+import os
 
 from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
@@ -13,8 +14,15 @@ TYPE_MAP = {
         "geofenceEnter": ArrivalEvent.ArrivalType.ENTER,
     }
 
+
 @csrf_exempt
 def traccar_webhook(request):
+    web_secret = request.headers.get("X-Webhook-Secret")
+    traccar_secret = os.environ.get("TRACCAR_WEBHOOK_SECRET", "")
+
+    if web_secret != traccar_secret:
+        return JsonResponse({"status": "invalid"}, status=403)
+
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:

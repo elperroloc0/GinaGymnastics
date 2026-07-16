@@ -8,4 +8,7 @@
 
     <entry key='event.forward.url'>http://host.docker.internal:8000/webhooks/traccar/</entry>
     <entry key='event.forward.type'>json</entry>
+
+    <entry key='event.forward.header'>X-Webhook-Secret: EHAajX8E_3hPZZ8r0DNLN5K_BzKJ4IHSHi6m_NXJa5o</entry>
+
 </properties>
