@@ -61,6 +61,9 @@ INSTALLED_APPS = [
 
     # third party model field for phone #:
     'phonenumber_field',
+
+    # django rest
+    'rest_framework',
 ]
 
 MIDDLEWARE = [

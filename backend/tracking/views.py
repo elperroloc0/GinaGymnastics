@@ -5,7 +5,10 @@ from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from fleet.models import GeoFence, Van
+from rest_framework import generics
 from tracking.models import ArrivalEvent
+
+from .serializers import ArrivalEventSerializer
 
 # Create your views here.
 
@@ -65,6 +68,18 @@ def traccar_webhook(request):
     # print(van, event_type, geo_fence, time)
 
     return JsonResponse({"status": "ok"})
+
+
+class ArrivalEventList(generics.ListAPIView):
+    queryset = ArrivalEvent.objects.all()
+    serializer_class = ArrivalEventSerializer
+
+
+
+
+
+
+
 
 
 

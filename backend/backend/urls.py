@@ -15,4 +15,7 @@ from django.urls import include, path
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('webhooks/', include("tracking.urls")),
+    path('api/', include("tracking.api_urls")),
+    path('api/', include("fleet.urls")),
+
 ]
