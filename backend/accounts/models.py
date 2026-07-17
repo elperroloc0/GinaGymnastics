@@ -26,6 +26,7 @@ class User(AbstractUser):
 class Child(models.Model):
     class Meta:
         verbose_name_plural = "children"
+
     name = models.CharField("First and Last name", max_length=150)
     parent = models.ForeignKey(User, on_delete=models.CASCADE, related_name='children')
     school = models.ForeignKey(GeoFence, on_delete=models.PROTECT, verbose_name="School", related_name='children')
