@@ -1,6 +1,7 @@
 import json
 import os
 
+from accounts.models import User
 from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -69,7 +70,14 @@ def traccar_webhook(request):
 
 
 class ArrivalEventList(generics.ListAPIView):
-    queryset = ArrivalEvent.objects.all()
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == User.Roles.OPERATOR or user.is_superuser:
+            return ArrivalEvent.objects.all()
+
+        return ArrivalEvent.objects.filter(geo_fence__children__parent=user)
+
     serializer_class = ArrivalEventSerializer
 
 
