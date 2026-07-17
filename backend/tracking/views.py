@@ -52,8 +52,6 @@ def traccar_webhook(request):
     except GeoFence.DoesNotExist:
         return JsonResponse({"status": "unknown geo fence"})
 
-
-
     time = data.get("event", {}).get("eventTime")
     if time is not None:
 
