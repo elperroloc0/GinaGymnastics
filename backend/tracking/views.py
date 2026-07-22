@@ -6,6 +6,7 @@ from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from fleet.models import GeoFence, Van
+from notifications.tasks import debug_sms
 from rest_framework import generics
 from tracking.models import ArrivalEvent
 
@@ -62,7 +63,17 @@ def traccar_webhook(request):
         except TypeError:
             return JsonResponse({"status": "Not valid datetime"})
 
-    ArrivalEvent.objects.create(van=van, geo_fence=traccar_fence, arrival_type=arrival_type, time=time)
+    ArrivalEvent.objects.create(van=van, geo_fence=traccar_fence, arrival_type=arrival_type, time=event_time)
+
+    parents = User.objects.filter(children__school=traccar_fence).distinct()
+
+    for parent in parents:
+        if not parent.phone_number:
+            pass
+
+        else:
+            debug_sms.delay_on_commit(str(parent.phone_number), 'child has arrived')
+
 
     # print(van, event_type, geo_fence, time)
 
@@ -92,7 +103,8 @@ class ArrivalEventList(generics.ListAPIView):
 
 '''curl -s -X POST http://127.0.0.1:8000/webhooks/traccar/ \
   -H "Content-Type: application/json" \
-  -d '{"event": {"id": 2, "deviceId": 1, "type": "geofenceEnter", "eventTime": "2026-07-15T18:30:17.386+00:00", "positionId": 9, "geofenceId": 3}, "device": {"id": 1, "name": "tracker-1", "uniqueId": "IMEI12345"}, "geofence": {"id": 3, "name": "Ginas Gymnastics"}}'
+  -H "X-Webhook-Secret: secret" \
+  -d '{"event": {"id": 2, "deviceId": 1, "type": "geofenceEnter", "eventTime": "2026-07-15T18:30:17.386+00:00", "positionId": 9, "geofenceId": 1}, "device": {"id": 1, "name": "Cla", "uniqueId": "862464068675730"}, "geofence": {"id": 1, "name": "Home"}}'
 '''
 
 
