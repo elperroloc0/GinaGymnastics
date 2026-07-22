@@ -59,6 +59,8 @@ INSTALLED_APPS = [
 
     'tracking.apps.TrackingConfig',
 
+    'notifications.apps.NotificationsConfig',
+
     # third party model field for phone #:
     'phonenumber_field',
 
@@ -85,6 +87,13 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ]
 }
+
+
+# Celery Configuration
+CELERY_BROKER_URL = "redis://localhost:6379"
+
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
 
 
 ROOT_URLCONF = 'backend.urls'
