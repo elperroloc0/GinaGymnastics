@@ -12,3 +12,6 @@ class ArrivalEvent(models.Model):
     geo_fence = models.ForeignKey(GeoFence, on_delete=models.PROTECT)
     arrival_type = models.CharField(max_length=12, choices=ArrivalType.choices)
     time = models.DateTimeField()
+
+    def __str__(self) -> str:
+        return f"{self.van} is {self.arrival_type}"
