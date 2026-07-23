@@ -1,5 +1,5 @@
 import os
-from urllib import response
+from unittest.mock import patch
 
 from accounts.models import Child, User
 from django.test import TestCase
@@ -13,8 +13,6 @@ class WebhookTest(TestCase):
     def setUp(self):
         self.van = Van.objects.create(name="TEST-VAN", tracker_imei="IMEI12345")
         self.school = GeoFence.objects.create(name="Test School", latitude=25.72, longitude=-80.43, radius=40, traccar_id=3,)
-
-        return ...
 
     def test_no_secret_rejected(self):
         response = self.client.post(
@@ -100,3 +98,27 @@ class EventListPermissionTest(TestCase):
         response = client.get("/api/events/")
         data = response.json()
         self.assertEqual(len(data), 2)
+
+
+class TaskTest(TestCase):
+    def setUp(self):
+        self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
+
+        self.van = Van.objects.create(name="TEST-VAN", tracker_imei="IMEI12345")
+        self.school = GeoFence.objects.create(name="Test School", latitude=25.72, longitude=-80.43, radius=40, traccar_id=1,)
+
+        self.parent = User.objects.create(username="parent", password="unsecure12345", role=User.Roles.PARENT, phone_number= "+17869167736")
+        self.child = Child.objects.create(name="child 1", parent=self.parent, school=self.school,)
+
+        ArrivalEvent.objects.create(van=self.van, geo_fence=self.school, arrival_type=ArrivalEvent.ArrivalType.ENTER, time="2012-09-04 06:00:00.000000+0800")
+
+    @patch("tracking.views.debug_sms")
+    def test_task_is_created(self, mock_task):
+        response = self.client.post(
+            "/webhooks/traccar/",
+            data={"event": {"id": 1, "deviceId": 1, "type": "geofenceEnter", "eventTime": "2026-07-15T18:30:17.386+00:00", "positionId": 9, "geofenceId": 1}, "device": {"id": 1, "name": "TEST-VAN", "uniqueId": "IMEI12345"}, "geofence": {"id": 1, "name": "Test School"}},
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret}
+        )
+        mock_task.delay_on_commit.assert_called_once()
+
