@@ -2,6 +2,8 @@ import json
 import os
 
 from accounts.models import User
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -20,19 +22,40 @@ TYPE_MAP = {
     }
 
 
-@csrf_exempt
-def traccar_webhook(request):
+def _check_secret(request):
     web_secret = request.headers.get("X-Webhook-Secret")
     traccar_secret = os.environ.get("TRACCAR_WEBHOOK_SECRET", "")
 
     if web_secret != traccar_secret:
-        return JsonResponse({"status": "invalid"}, status=403)
+        return False
 
+    return True
+
+def _get_request_json(request):
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
-        return JsonResponse({"error": "invalid json"}, status=400)
+        return None
     # print(json.dumps(data, indent=3))
+    return data
+
+
+def _get_van(imei):
+    try:
+        return Van.objects.get(tracker_imei=imei)
+    except Van.DoesNotExist:
+        return None
+
+
+@csrf_exempt
+def traccar_webhook(request):
+    if not _check_secret(request):
+        return JsonResponse({"status": "invalid"}, status=403)
+
+    data = _get_request_json(request)
+
+    if not data:
+        return JsonResponse({"error": "invalid json"}, status=400)
 
     event_type = data.get("event", {}).get("type")
     if event_type not in TYPE_MAP:
@@ -42,9 +65,8 @@ def traccar_webhook(request):
     # print(arrival_type)
 
     imei = data.get("device", {}).get("uniqueId")
-    try:
-        van = Van.objects.get(tracker_imei=imei)
-    except Van.DoesNotExist:
+    van = _get_van(imei)
+    if van is None:
         return JsonResponse({"status": "unknown device"})
 
     traccar_fence_id = data.get("event", {}).get("geofenceId")
@@ -69,22 +91,54 @@ def traccar_webhook(request):
 
     for parent in parents:
         if not parent.phone_number:
-            pass
+            continue
 
-        else:
-            debug_sms.delay_on_commit(str(parent.phone_number), 'child has arrived')
+        debug_sms.delay_on_commit(str(parent.phone_number), 'child has arrived') # type: ignore
 
 
     # print(van, event_type, geo_fence, time)
 
     return JsonResponse({"status": "ok"})
 
+@csrf_exempt
+def traccar_position(request):
+    if not _check_secret(request):
+        return JsonResponse({"status": "invalid"}, status=403)
+
+    data = _get_request_json(request)
+    if not data:
+        return JsonResponse({"error": "invalid json"}, status=400)
+
+    lat = data.get("position", {}).get("latitude")
+    lon = data.get("position", {}).get("longitude")
+
+    imei = data.get("device", {}).get("uniqueId")
+    van = _get_van(imei)
+    if van is None:
+        return JsonResponse({"status": "unknown device"})
+
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return JsonResponse({"status": "channel layer unavailable"}, status=500)
+
+    async_to_sync(channel_layer.group_send)(
+        "van_position",
+        {
+            "type": "van_position_update",
+            "data": json.dumps({"lat": lat, "lon": lon}),
+        },
+    )
+
+    return JsonResponse({"status": "ok"})
+
+
+
 
 class ArrivalEventList(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        if user.role == User.Roles.OPERATOR or user.is_superuser:
+        if user.role == User.Roles.OPERATOR or user.is_superuser: #type: ignore
             return ArrivalEvent.objects.all()
 
         return ArrivalEvent.objects.filter(geo_fence__children__parent=user)
