@@ -48,7 +48,7 @@ def _get_van(imei):
 
 
 @csrf_exempt
-def traccar_webhook(request):
+def arrival_webhook(request):
     if not _check_secret(request):
         return JsonResponse({"status": "invalid"}, status=403)
 
@@ -151,7 +151,7 @@ class ArrivalEventList(generics.ListAPIView):
 
 
 
-'''curl -s -X POST http://127.0.0.1:8000/webhooks/traccar/ \
+'''curl -s -X POST http://127.0.0.1:8000/webhooks/arrival/ \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Secret: secret" \
   -d '{"event": {"id": 2, "deviceId": 1, "type": "geofenceEnter", "eventTime": "2026-07-15T18:30:17.386+00:00", "positionId": 9, "geofenceId": 1}, "device": {"id": 1, "name": "Cla", "uniqueId": "862464068675730"}, "geofence": {"id": 1, "name": "Home"}}'

@@ -3,7 +3,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path("traccar/", views.traccar_webhook),
+    path("arrival/", views.arrival_webhook),
     path("position/", views.traccar_position),
 
 ]

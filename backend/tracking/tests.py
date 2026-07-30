@@ -1,11 +1,15 @@
 import os
 from unittest.mock import patch
 
+import pytest
 from accounts.models import Child, User
+from channels.testing import HttpCommunicator
 from django.test import TestCase
 from fleet.models import GeoFence, Van
 from rest_framework.test import APIClient
-from tracking.models import ArrivalEvent
+
+from .consumers import VanPositionConsumer
+from .models import ArrivalEvent
 
 
 # Create your tests here.
@@ -22,7 +26,7 @@ class WebhookTest(TestCase):
 
     def test_no_secret_rejected(self):
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data="{}",
             content_type="application/json",
         )
@@ -31,7 +35,7 @@ class WebhookTest(TestCase):
     def test_valid_event_created(self):
         secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data={
                 "event": {
                     "id": 1,
@@ -52,7 +56,7 @@ class WebhookTest(TestCase):
 
     def test_event_with_no_secret(self):
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data={
                 "event": {
                     "id": 1,
@@ -73,7 +77,7 @@ class WebhookTest(TestCase):
 
     def test_wrong_secret_rejected(self):
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data={
                 "event": {
                     "id": 1,
@@ -95,7 +99,7 @@ class WebhookTest(TestCase):
     def test_foreign_event_ignored(self):
         secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data={
                 "event": {
                     "id": 1,
@@ -115,7 +119,67 @@ class WebhookTest(TestCase):
         self.assertEqual(ArrivalEvent.objects.count(), 0)
 
 
-class ChannelsTest(TestCase): ...
+class PositionViewTest(TestCase):
+    def setUp(self):
+        self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
+        self.van = Van.objects.create(name="TEST-VAN", tracker_imei="IMEI12345")
+
+    def test_wrong_secret_rejected(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "event": {
+                    "id": 1,
+                    "deviceId": 1,
+                    "type": "deviceStopped",
+                    "eventTime": "2026-07-15T18:30:17.386+00:00",
+                    "positionId": 9,
+                    "geofenceId": 3,
+                },
+                "device": {"id": 1, "name": "tracker-1", "uniqueId": "IMEI123"},
+                "geofence": {"id": 3, "name": "Test School"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": "wrong secret"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_valid_request_passes(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+
+    def test_broken_json(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={"not valid json"},
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_unknown_van_rejected(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "UNKNOWN-DEVICE"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "unknown device")
 
 
 class EventListPermissionTest(TestCase):
@@ -170,14 +234,14 @@ class EventListPermissionTest(TestCase):
         client = APIClient()
         client.force_authenticate(user=self.parent)
         response = client.get("/api/events/")
-        data = response.json()
+        data = response.json()  # type: ignore
         self.assertEqual(len(data), 1)
 
     def test_admin_sees_all_events(self):
         client = APIClient()
         client.force_authenticate(user=self.admin)
         response = client.get("/api/events/")
-        data = response.json()
+        data = response.json()  # type: ignore
         self.assertEqual(len(data), 2)
 
 
@@ -216,7 +280,7 @@ class TaskTest(TestCase):
     @patch("tracking.views.debug_sms")
     def test_task_is_created(self, mock_task):
         response = self.client.post(
-            "/webhooks/traccar/",
+            "/webhooks/arrival/",
             data={
                 "event": {
                     "id": 1,
