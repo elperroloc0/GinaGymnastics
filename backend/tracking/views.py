@@ -128,14 +128,10 @@ def traccar_position(request):
             "data": json.dumps({"lat": lat, "lon": lon}),
         },
     )
-
     return JsonResponse({"status": "ok"})
 
 
-
-
 class ArrivalEventList(generics.ListAPIView):
-
     def get_queryset(self):
         user = self.request.user
         if user.role == User.Roles.OPERATOR or user.is_superuser: #type: ignore
