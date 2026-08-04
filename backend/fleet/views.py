@@ -10,3 +10,6 @@ from .serializers import RouteSerializer
 class RouteList(generics.ListAPIView):
     queryset = Route.objects.all()
     serializer_class = RouteSerializer
+
+
+
