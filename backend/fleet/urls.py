@@ -1,7 +1,9 @@
-from django.urls import path
+from rest_framework.routers import DefaultRouter
 
 from . import views
 
-urlpatterns = [
-    path("routes/", views.RouteList.as_view())
-]
+router = DefaultRouter()
+router.register("routes", views.RouteViewSet)
+router.register("geofences", views.GeoFenceViewSet)
+
+urlpatterns = router.urls
