@@ -32,7 +32,7 @@ class GeoFence(models.Model):
 
 
 class Route(models.Model):
-    van = models.ForeignKey(Van, on_delete=models.PROTECT)
+    van = models.ForeignKey(Van, on_delete=models.PROTECT, related_name="routes")
     origin = models.ForeignKey(GeoFence, on_delete=models.PROTECT, related_name="routes_from")
     destination = models.ForeignKey(GeoFence, on_delete=models.PROTECT, related_name="routes_to")
 

@@ -1,10 +1,6 @@
-
-from encodings.punycode import T
-from pyexpat import model
-
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-from fleet.models import GeoFence
+from fleet.models import Route
 from phonenumber_field.modelfields import PhoneNumberField
 
 
@@ -29,9 +25,30 @@ class Child(models.Model):
 
     name = models.CharField("First and Last name", max_length=150)
     parent = models.ForeignKey(User, on_delete=models.CASCADE, related_name='children')
-    school = models.ForeignKey(GeoFence, on_delete=models.PROTECT, verbose_name="School", related_name='children')
-    pickup_hour = models.TimeField(blank=True, null=True)
+    route = models.ForeignKey(Route, on_delete=models.PROTECT, related_name='children')
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
-        return f'{self.name} -- {self.school}'
+        return f'{self.name} -- {self.route}'
+
+
+class ChildSchedule(models.Model):
+    class Weekday(models.IntegerChoices):
+        MONDAY = 0, "Monday"
+        TUESDAY = 1, "Tuesday"
+        WEDNESDAY = 2, "Wednesday"
+        THURSDAY = 3, "Thursday"
+        FRIDAY = 4, "Friday"
+        SATURDAY = 5, "Saturday"
+        SUNDAY = 6, "Sunday"
+
+    child = models.ForeignKey(Child, on_delete=models.CASCADE, related_name='schedule')
+    weekday = models.IntegerField(choices=Weekday.choices)
+    pickup_hour = models.TimeField()
+
+    class Meta:
+        unique_together = ('child', 'weekday')
+        ordering = ['weekday']
+
+    def __str__(self) -> str:
+        return f'{self.child} -- {self.get_weekday_display()} {self.pickup_hour}' # type: ignore

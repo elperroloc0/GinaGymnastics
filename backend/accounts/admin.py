@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import Child, User
+from .models import Child, ChildSchedule, User
 
 
 class CustomUserAdmin(UserAdmin):
@@ -25,6 +25,15 @@ class CustomUserAdmin(UserAdmin):
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
 
+class ChildScheduleInline(admin.TabularInline):
+    model = ChildSchedule
+    extra = 1
+
+
+class ChildAdmin(admin.ModelAdmin):
+    inlines = [ChildScheduleInline]
+
+
 # Register your models here.
 admin.site.register(User, CustomUserAdmin)
-admin.site.register(Child)
+admin.site.register(Child, ChildAdmin)

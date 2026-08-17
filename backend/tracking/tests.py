@@ -5,7 +5,7 @@ import pytest
 from accounts.models import Child, User
 from channels.testing import HttpCommunicator
 from django.test import TestCase
-from fleet.models import GeoFence, Van
+from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
 
 from .consumers import VanPositionConsumer
@@ -199,6 +199,17 @@ class EventListPermissionTest(TestCase):
             radius=40,
             traccar_id=2,
         )
+        self.gym = GeoFence.objects.create(
+            name="Test Gym",
+            location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.80,
+            longitude=-80.50,
+            radius=40,
+            traccar_id=99,
+        )
+        self.route = Route.objects.create(
+            van=self.van, origin=self.school_1, destination=self.gym
+        )
 
         self.admin = User.objects.create_superuser(
             username="admin1", email="", password="unsecure12345"
@@ -209,7 +220,7 @@ class EventListPermissionTest(TestCase):
         self.child = Child.objects.create(
             name="child 1",
             parent=self.parent,
-            school=self.school_1,
+            route=self.route,
         )
 
         ArrivalEvent.objects.create(
@@ -257,6 +268,17 @@ class TaskTest(TestCase):
             radius=40,
             traccar_id=1,
         )
+        self.gym = GeoFence.objects.create(
+            name="Test Gym",
+            location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.80,
+            longitude=-80.50,
+            radius=40,
+            traccar_id=98,
+        )
+        self.route = Route.objects.create(
+            van=self.van, origin=self.school, destination=self.gym
+        )
 
         self.parent = User.objects.create(
             username="parent",
@@ -267,7 +289,7 @@ class TaskTest(TestCase):
         self.child = Child.objects.create(
             name="child 1",
             parent=self.parent,
-            school=self.school,
+            route=self.route,
         )
 
         ArrivalEvent.objects.create(

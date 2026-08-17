@@ -87,7 +87,7 @@ def arrival_webhook(request):
 
     ArrivalEvent.objects.create(van=van, geo_fence=traccar_fence, arrival_type=arrival_type, time=event_time)
 
-    parents = User.objects.filter(children__school=traccar_fence).distinct()
+    parents = User.objects.filter(children__route__origin=traccar_fence).distinct()
 
     for parent in parents:
         if not parent.phone_number:
@@ -137,7 +137,7 @@ class ArrivalEventList(generics.ListAPIView):
         if user.role == User.Roles.OPERATOR or user.is_superuser: #type: ignore
             return ArrivalEvent.objects.all()
 
-        return ArrivalEvent.objects.filter(geo_fence__children__parent=user)
+        return ArrivalEvent.objects.filter(geo_fence__routes_from__children__parent=user)
 
     serializer_class = ArrivalEventSerializer
 
