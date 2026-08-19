@@ -1,10 +1,13 @@
-
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 GROUP_NAME = "van_position"
 
 class VanPositionConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        user = self.scope["user"] #type: ignore
+        if user.is_anonymous: # type: ignore
+            await self.close(code=4001)
+            return
         await self.channel_layer.group_add(GROUP_NAME, self.channel_name)
         await self.accept()
 

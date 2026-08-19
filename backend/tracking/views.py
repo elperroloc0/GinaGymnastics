@@ -1,20 +1,23 @@
 import json
 import os
+import uuid
 
 from accounts.models import User
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from fleet.models import GeoFence, Van
 from notifications.tasks import debug_sms
 from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from tracking.models import ArrivalEvent
 
 from .serializers import ArrivalEventSerializer
-
-# Create your views here.
 
 TYPE_MAP = {
         "geofenceExit": ArrivalEvent.ArrivalType.EXIT,
@@ -143,8 +146,17 @@ class ArrivalEventList(generics.ListAPIView):
 
 
 
+class WebSocketTicketView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request, *args, **kwargs):
+        # generate ticket
+        ticket = str(uuid.uuid4())
 
+        # store in redis
+        cache.set(f"ws_ticket:{ticket}", request.user.id, timeout=30)
+
+        return Response({"ticket": ticket})
 
 
 

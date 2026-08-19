@@ -3,7 +3,9 @@ from unittest.mock import patch
 
 import pytest
 from accounts.models import Child, User
-from channels.testing import HttpCommunicator
+from backend.asgi import application
+from channels.testing import HttpCommunicator, WebsocketCommunicator
+from django.core.cache import cache
 from django.test import TestCase
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
@@ -319,3 +321,55 @@ class TaskTest(TestCase):
             headers={"X-Webhook-Secret": self.secret},
         )
         mock_task.delay_on_commit.assert_called_once()
+
+
+class WebSocketAuthTest(TestCase):
+    ORIGIN_HEADERS = [(b"origin", b"http://localhost:8000")]
+
+    async def asyncSetUp(self):
+        self.user = await User.objects.acreate(username="ws-test-user", password="unsecure12345")
+
+    async def test_valid_ticket_is_accepted(self):
+        await self.asyncSetUp()
+        cache.set("ws_ticket:valid-ticket", self.user.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application, "/ws/van/?ticket=valid-ticket", headers=self.ORIGIN_HEADERS
+        )
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.disconnect()
+
+    async def test_ticket_is_single_use(self):
+        await self.asyncSetUp()
+        cache.set("ws_ticket:reuse-ticket", self.user.id, timeout=30)
+
+        first = WebsocketCommunicator(
+            application, "/ws/van/?ticket=reuse-ticket", headers=self.ORIGIN_HEADERS
+        )
+        connected, _ = await first.connect()
+        self.assertTrue(connected)
+        await first.disconnect()
+
+        second = WebsocketCommunicator(
+            application, "/ws/van/?ticket=reuse-ticket", headers=self.ORIGIN_HEADERS
+        )
+        connected_again, close_code = await second.connect()
+        self.assertFalse(connected_again)
+        self.assertEqual(close_code, 4001)
+
+    async def test_unknown_ticket_is_rejected(self):
+        communicator = WebsocketCommunicator(
+            application, "/ws/van/?ticket=does-not-exist", headers=self.ORIGIN_HEADERS
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4001)
+
+    async def test_missing_ticket_is_rejected(self):
+        communicator = WebsocketCommunicator(
+            application, "/ws/van/", headers=self.ORIGIN_HEADERS
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4001)
