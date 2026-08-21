@@ -14,4 +14,4 @@ class ArrivalEvent(models.Model):
     time = models.DateTimeField()
 
     def __str__(self) -> str:
-        return f"{self.van} is {self.arrival_type}"
+        return f"{self.van} is {self.arrival_type} | Location: {self.geo_fence}"

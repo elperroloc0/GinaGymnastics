@@ -1,14 +1,17 @@
+import json
 import os
 from unittest.mock import patch
 
 import pytest
 from accounts.models import Child, User
-from backend.asgi import application
+from asgiref.sync import sync_to_async
 from channels.testing import HttpCommunicator, WebsocketCommunicator
 from django.core.cache import cache
 from django.test import TestCase
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
+
+from backend.asgi import application
 
 from .consumers import VanPositionConsumer
 from .models import ArrivalEvent
@@ -328,6 +331,7 @@ class WebSocketAuthTest(TestCase):
 
     async def asyncSetUp(self):
         self.user = await User.objects.acreate(username="ws-test-user", password="unsecure12345")
+        self.van = await Van.objects.acreate(name="TEST-VAN", tracker_imei="IMEI12345")
 
     async def test_valid_ticket_is_accepted(self):
         await self.asyncSetUp()
@@ -373,3 +377,38 @@ class WebSocketAuthTest(TestCase):
         connected, close_code = await communicator.connect()
         self.assertFalse(connected)
         self.assertEqual(close_code, 4001)
+
+    async def test_receive_layer_group(self):
+        self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
+
+        self.user = await User.objects.acreate(
+            username="user123",
+            password="unsecure123",
+            role="OPERATOR"
+        )
+        self.van = await Van.objects.acreate(
+            name="TEST-VAN",
+            tracker_imei="IMEI12345"
+        )
+        cache.set("ws_ticket:valid-ticket", self.user.id, timeout=30)
+
+        communicator = WebsocketCommunicator(application, "/ws/van/?ticket=valid-ticket", headers=self.ORIGIN_HEADERS)
+
+        connected, _ = await communicator.connect()
+
+        self.assertTrue(connected)
+
+        await sync_to_async(self.client.post)(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},)
+
+        result = await communicator.receive_from()
+        result = json.loads(result)
+
+        self.assertEqual(result, {"lat": 25.72, "lon": -80.43})
+        await communicator.disconnect()

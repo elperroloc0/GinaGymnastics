@@ -17,13 +17,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from tracking.models import ArrivalEvent
 
+from .consumers import GROUP_NAME, OPERATORS_GROUP
 from .serializers import ArrivalEventSerializer
 
 TYPE_MAP = {
         "geofenceExit": ArrivalEvent.ArrivalType.EXIT,
         "geofenceEnter": ArrivalEvent.ArrivalType.ENTER,
     }
-
 
 def _check_secret(request):
     web_secret = request.headers.get("X-Webhook-Secret")
@@ -125,12 +125,19 @@ def traccar_position(request):
         return JsonResponse({"status": "channel layer unavailable"}, status=500)
 
     async_to_sync(channel_layer.group_send)(
-        "van_position",
+        f"{GROUP_NAME}_{van.id}",
         {
             "type": "van_position_update",
             "data": json.dumps({"lat": lat, "lon": lon}),
         },
     )
+    async_to_sync(channel_layer.group_send)(
+            f"{OPERATORS_GROUP}",
+            {
+                "type": "van_position_update",
+                "data": json.dumps({"lat": lat, "lon": lon}),
+            },
+        )
     return JsonResponse({"status": "ok"})
 
 
