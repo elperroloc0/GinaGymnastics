@@ -2,7 +2,6 @@ from django.db import models
 from fleet.models import GeoFence, Van
 
 
-# Create your models here.
 class ArrivalEvent(models.Model):
     class ArrivalType(models.TextChoices):
         ENTER = "in", "Arrived"
@@ -14,4 +13,4 @@ class ArrivalEvent(models.Model):
     time = models.DateTimeField()
 
     def __str__(self) -> str:
-        return f"{self.van} is {self.arrival_type} | Location: {self.geo_fence}"
+        return f"{self.van} is {self.arrival_type} {self.geo_fence}"

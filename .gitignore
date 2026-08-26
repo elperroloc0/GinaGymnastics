@@ -61,6 +61,7 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+schema.sql
 
 # Flask stuff:
 instance/
@@ -212,4 +213,8 @@ __marimo__/
 
 
 traccar/traccar.xml
+
+# claude
+/.claude
+
 

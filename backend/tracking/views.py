@@ -1,15 +1,17 @@
 import json
 import os
 import uuid
+from datetime import datetime, timedelta
 
-from accounts.models import User
+from accounts.models import Child, User
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.cache import cache
 from django.http import JsonResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
-from fleet.models import GeoFence, Van
+from fleet.models import GeoFence, Route, Van
 from notifications.tasks import debug_sms
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
@@ -24,6 +26,8 @@ TYPE_MAP = {
         "geofenceExit": ArrivalEvent.ArrivalType.EXIT,
         "geofenceEnter": ArrivalEvent.ArrivalType.ENTER,
     }
+
+today = datetime.now()
 
 def _check_secret(request):
     web_secret = request.headers.get("X-Webhook-Secret")
@@ -61,45 +65,70 @@ def arrival_webhook(request):
         return JsonResponse({"error": "invalid json"}, status=400)
 
     event_type = data.get("event", {}).get("type")
+
     if event_type not in TYPE_MAP:
         return JsonResponse({"status": "ignored"})
 
     arrival_type = TYPE_MAP[event_type]
-    # print(arrival_type)
 
     imei = data.get("device", {}).get("uniqueId")
     van = _get_van(imei)
+
     if van is None:
         return JsonResponse({"status": "unknown device"})
 
     traccar_fence_id = data.get("event", {}).get("geofenceId")
+
     try:
         traccar_fence = GeoFence.objects.get(traccar_id=traccar_fence_id)
-        # print(traccar_fence)
     except GeoFence.DoesNotExist:
         return JsonResponse({"status": "unknown geo fence"})
 
     time = data.get("event", {}).get("eventTime")
-    if time is not None:
 
+    if time is not None:
         try:
             event_time = parse_datetime(time)
-            # print(event_time)
         except TypeError:
             return JsonResponse({"status": "Not valid datetime"})
 
     ArrivalEvent.objects.create(van=van, geo_fence=traccar_fence, arrival_type=arrival_type, time=event_time)
 
-    parents = User.objects.filter(children__route__origin=traccar_fence).distinct()
+    if arrival_type == ArrivalEvent.ArrivalType.ENTER:
+        # сhildren have arrived to gym:
+        # flag as inactive ride
+        gym_route = Route.objects.filter(destination=traccar_fence)
+        Child.objects.filter(route__in=gym_route).update(active_ride=False)
 
-    for parent in parents:
-        if not parent.phone_number:
-            continue
+        # Van arrived to school:
+        # flag as active ride
+        # Notify parents when van arrived
+        now = timezone.now()
+        today_weekday = now.weekday()
+        BUFFER = timedelta(minutes=30)
 
-        debug_sms.delay_on_commit(str(parent.phone_number), 'child has arrived') # type: ignore
+        school_route = Route.objects.filter(origin=traccar_fence)
+        candidates = Child.objects.filter(route__in=school_route, schedule__weekday=today_weekday)
 
+        local_now = timezone.localtime(now)
 
-    # print(van, event_type, geo_fence, time)
+        for child in candidates:
+            schedule = child.schedule.filter(weekday=today_weekday).first()
+            scheduled_dt = timezone.make_aware(datetime.combine(local_now.date(), schedule.pickup_hour))
+            if abs(now - scheduled_dt) <= BUFFER:
+                child.active_ride = True
+                child.active_ride_start = now
+                child.save()
+
+        parents = User.objects.filter(children__route__origin=traccar_fence).distinct()
+
+        for parent in parents:
+            if not parent.phone_number:
+                continue
+
+            debug_sms.delay_on_commit(str(parent.phone_number), 'Van has arrived to the school. <link to live map>') # type: ignore
+
+        # TODO: Notify parents when van has arrived to gym
 
     return JsonResponse({"status": "ok"})
 
@@ -150,7 +179,6 @@ class ArrivalEventList(generics.ListAPIView):
         return ArrivalEvent.objects.filter(geo_fence__routes_from__children__parent=user)
 
     serializer_class = ArrivalEventSerializer
-
 
 
 class WebSocketTicketView(APIView):

@@ -26,7 +26,9 @@ class Child(models.Model):
     name = models.CharField("First and Last name", max_length=150)
     parent = models.ForeignKey(User, on_delete=models.CASCADE, related_name='children')
     route = models.ForeignKey(Route, on_delete=models.PROTECT, related_name='children')
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True,)
+    active_ride = models.BooleanField(default=False,)
+    active_ride_start = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return f'{self.name} -- {self.route}'

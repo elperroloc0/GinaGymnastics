@@ -41,14 +41,14 @@ class Route(models.Model):
         return f"{self.van}: From {self.origin} to {self.destination}"
 
     def clean(self):
-            if self.origin.location_type == self.destination.location_type:
-                raise ValidationError("Origin and destination must be diferent.")
-
-            elif self.origin.location_type != GeoFence.LocationTypes.SCHOOL:
+            if self.origin.location_type != GeoFence.LocationTypes.SCHOOL:
                 raise ValidationError("Origin must be an school.")
 
             elif self.destination.location_type != GeoFence.LocationTypes.GINAS_GYM:
                 raise ValidationError("Destination must be a gym.")
+
+            elif self.origin.location_type == self.destination.location_type:
+                    raise ValidationError("Origin and destination must be diferent.")
 
     def save(self,*args, **kwargs):
         self.full_clean()
