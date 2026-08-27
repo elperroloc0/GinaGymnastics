@@ -1,4 +1,6 @@
-"""this file is created for utility fuctions that will be used within the tracking logic code base"""
+"""
+this file is created for utility fuctions that will be used within the tracking logic
+"""
 
 """
 цель - вычислять нужно ли давать доступ конкретному родителю чтобы он мог видеть карту

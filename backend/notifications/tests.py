@@ -15,4 +15,3 @@ class TwilioClientTest(TestCase):
             from_=ANY,
             body="test text",
         )
-

@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from fleet.models import GeoFence, Route, Van
-from notifications.tasks import debug_sms
+from notifications.services import notify_parent
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -27,7 +27,6 @@ TYPE_MAP = {
         "geofenceEnter": ArrivalEvent.ArrivalType.ENTER,
     }
 
-today = datetime.now()
 
 def _check_secret(request):
     web_secret = request.headers.get("X-Webhook-Secret")
@@ -94,41 +93,54 @@ def arrival_webhook(request):
 
     ArrivalEvent.objects.create(van=van, geo_fence=traccar_fence, arrival_type=arrival_type, time=event_time)
 
+    # Only arrivals (ENTER) drive ride state - a van leaving (EXIT) doesn't
+    # need to flip active_ride either way, that's handled by the two branches below.
     if arrival_type == ArrivalEvent.ArrivalType.ENTER:
-        # сhildren have arrived to gym:
-        # flag as inactive ride
-        gym_route = Route.objects.filter(destination=traccar_fence)
-        Child.objects.filter(route__in=gym_route).update(active_ride=False)
 
-        # Van arrived to school:
-        # flag as active ride
-        # Notify parents when van arrived
+        # --- Ride may be starting: van reached a school (origin) ---
+        # --- SCHOOL
         now = timezone.now()
-        today_weekday = now.weekday()
+        # Must use local time for weekday/date - pickup_hour is entered by
+        # operators in local time, and now.weekday() (UTC) can disagree with the
+        # local day near midnight.
+        local_now = timezone.localtime(now)
+        today_weekday = local_now.weekday()
+        # Tolerance around the scheduled pickup time - GPS/webhook timing isn't
+        # exact, and this also stops a parent from getting map access hours
+        # before/after the actual pickup window.
         BUFFER = timedelta(minutes=30)
 
         school_route = Route.objects.filter(origin=traccar_fence)
+
         candidates = Child.objects.filter(route__in=school_route, schedule__weekday=today_weekday)
 
-        local_now = timezone.localtime(now)
-
         for child in candidates:
+            # unique_together=('child', 'weekday') on ChildSchedule guarantees
+            # at most one row here, so .first() is safe.
             schedule = child.schedule.filter(weekday=today_weekday).first()
             scheduled_dt = timezone.make_aware(datetime.combine(local_now.date(), schedule.pickup_hour))
+            # Two-sided check: the event can arrive slightly before or after
+            # the scheduled pickup_hour.
             if abs(now - scheduled_dt) <= BUFFER:
                 child.active_ride = True
+                notify_parent(child, 'Van has arrived to the school. <link to live map>')
                 child.active_ride_start = now
                 child.save()
 
-        parents = User.objects.filter(children__route__origin=traccar_fence).distinct()
+        # --- Ride ended: van reached the gym (destination) ---
+        # Route.clean() guarantees destination is always a GYM-type geofence and
+        # origin is always SCHOOL, so a single traccar_fence can only ever match
+        # one of these two branches, never both.
+        # --- GYM
 
-        for parent in parents:
-            if not parent.phone_number:
-                continue
+        gym_route = Route.objects.filter(destination=traccar_fence)
+        candidates = Child.objects.filter(route__in=gym_route)
 
-            debug_sms.delay_on_commit(str(parent.phone_number), 'Van has arrived to the school. <link to live map>') # type: ignore
+        for child in candidates:
+            child.active_ride = False
+            notify_parent(child, 'Van has arrived to Ginas Gymnastics')
+            child.save()
 
-        # TODO: Notify parents when van has arrived to gym
 
     return JsonResponse({"status": "ok"})
 

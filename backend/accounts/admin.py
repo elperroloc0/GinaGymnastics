@@ -37,3 +37,5 @@ class ChildAdmin(admin.ModelAdmin):
 # Register your models here.
 admin.site.register(User, CustomUserAdmin)
 admin.site.register(Child, ChildAdmin)
+
+
