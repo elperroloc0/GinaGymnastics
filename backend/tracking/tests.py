@@ -1,13 +1,15 @@
 import json
 import os
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from accounts.models import Child, User
+from accounts.models import Child, ChildSchedule, User
 from asgiref.sync import sync_to_async
 from channels.testing import HttpCommunicator, WebsocketCommunicator
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
 
@@ -297,6 +299,14 @@ class TaskTest(TestCase):
             route=self.route,
         )
 
+        # arrival_webhook only notifies children scheduled for today, within a
+        # buffer of pickup_hour - so the schedule has to match "now" for this
+        # test to trigger a notification at all.
+        now = timezone.localtime(timezone.now())
+        ChildSchedule.objects.create(
+            child=self.child, weekday=now.weekday(), pickup_hour=now.time()
+        )
+
         ArrivalEvent.objects.create(
             van=self.van,
             geo_fence=self.school,
@@ -304,7 +314,7 @@ class TaskTest(TestCase):
             time="2012-09-04 06:00:00.000000+0800",
         )
 
-    @patch("tracking.views.debug_sms")
+    @patch("notifications.services.debug_sms")
     def test_task_is_created(self, mock_task):
         response = self.client.post(
             "/webhooks/arrival/",
@@ -330,7 +340,11 @@ class WebSocketAuthTest(TestCase):
     ORIGIN_HEADERS = [(b"origin", b"http://localhost:8000")]
 
     async def asyncSetUp(self):
-        self.user = await User.objects.acreate(username="ws-test-user", password="unsecure12345")
+        # Operator, not parent: these tests are about ticket validity, not
+        # about the child/active-ride gating below - that has its own tests.
+        self.user = await User.objects.acreate(
+            username="ws-test-user", password="unsecure12345", role=User.Roles.OPERATOR
+        )
         self.van = await Van.objects.acreate(name="TEST-VAN", tracker_imei="IMEI12345")
 
     async def test_valid_ticket_is_accepted(self):
@@ -412,3 +426,139 @@ class WebSocketAuthTest(TestCase):
 
         self.assertEqual(result, {"lat": 25.72, "lon": -80.43})
         await communicator.disconnect()
+
+    async def _make_child(self, parent, imei, traccar_id_offset, **child_kwargs):
+        van = await Van.objects.acreate(name=f"VAN-{imei}", tracker_imei=imei)
+        school = await GeoFence.objects.acreate(
+            name=f"School-{traccar_id_offset}",
+            location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.0, longitude=-80.0, radius=40,
+            traccar_id=traccar_id_offset,
+        )
+        gym = await GeoFence.objects.acreate(
+            name=f"Gym-{traccar_id_offset}",
+            location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.1, longitude=-80.1, radius=40,
+            traccar_id=traccar_id_offset + 1,
+        )
+        route = await Route.objects.acreate(van=van, origin=school, destination=gym)
+        child = await Child.objects.acreate(name="Test Child", parent=parent, route=route, **child_kwargs)
+        # Stashed for tests that need to simulate webhook events for this
+        # child's route - not real model fields.
+        child._test_van = van
+        child._test_gym = gym
+        return child
+
+    async def test_parent_missing_child_id_rejected(self):
+        parent = await User.objects.acreate(username="parent-no-child-id", password="unsecure12345")
+        cache.set("ws_ticket:no-child-id", parent.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application, "/ws/van/?ticket=no-child-id", headers=self.ORIGIN_HEADERS
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4002)
+
+    async def test_parent_wrong_child_rejected(self):
+        parent = await User.objects.acreate(username="parent-wrong-child", password="unsecure12345")
+        other_parent = await User.objects.acreate(username="other-parent", password="unsecure12345")
+        others_child = await self._make_child(other_parent, "IMEI-WRONG", 601)
+
+        cache.set("ws_ticket:wrong-child", parent.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application,
+            f"/ws/van/?ticket=wrong-child&child_id={others_child.id}",
+            headers=self.ORIGIN_HEADERS,
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4002)
+
+    async def test_parent_child_without_active_ride_rejected(self):
+        parent = await User.objects.acreate(username="parent-inactive", password="unsecure12345")
+        child = await self._make_child(parent, "IMEI-INACTIVE", 603)  # active_ride defaults to False
+
+        cache.set("ws_ticket:inactive-ride", parent.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application,
+            f"/ws/van/?ticket=inactive-ride&child_id={child.id}",
+            headers=self.ORIGIN_HEADERS,
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4003)
+
+    async def test_parent_child_with_active_ride_accepted(self):
+        parent = await User.objects.acreate(username="parent-active", password="unsecure12345")
+        child = await self._make_child(
+            parent, "IMEI-ACTIVE", 605, active_ride=True, active_ride_start=timezone.now()
+        )
+
+        cache.set("ws_ticket:active-ride", parent.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application,
+            f"/ws/van/?ticket=active-ride&child_id={child.id}",
+            headers=self.ORIGIN_HEADERS,
+        )
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.disconnect()
+
+    async def test_parent_stale_active_ride_rejected(self):
+        parent = await User.objects.acreate(username="parent-stale", password="unsecure12345")
+        child = await self._make_child(
+            parent,
+            "IMEI-STALE",
+            607,
+            active_ride=True,
+            active_ride_start=timezone.now() - timedelta(hours=7),
+        )
+
+        cache.set("ws_ticket:stale-ride", parent.id, timeout=30)
+
+        communicator = WebsocketCommunicator(
+            application,
+            f"/ws/van/?ticket=stale-ride&child_id={child.id}",
+            headers=self.ORIGIN_HEADERS,
+        )
+        connected, close_code = await communicator.connect()
+        self.assertFalse(connected)
+        self.assertEqual(close_code, 4003)
+
+    async def test_ride_ended_closes_open_socket(self):
+        parent = await User.objects.acreate(username="parent-ride-ends", password="unsecure12345")
+        child = await self._make_child(
+            parent, "IMEI-ENDING", 609, active_ride=True, active_ride_start=timezone.now()
+        )
+
+        cache.set("ws_ticket:ride-ending", parent.id, timeout=30)
+        communicator = WebsocketCommunicator(
+            application,
+            f"/ws/van/?ticket=ride-ending&child_id={child.id}",
+            headers=self.ORIGIN_HEADERS,
+        )
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        # Simulate Traccar reporting the van has arrived at the gym
+        # (destination) for this child's route.
+        await sync_to_async(self.client.post)(
+            "/webhooks/arrival/",
+            data={
+                "event": {
+                    "type": "geofenceEnter",
+                    "eventTime": "2026-01-01T12:00:00.000+00:00",
+                    "geofenceId": child._test_gym.traccar_id,
+                },
+                "device": {"uniqueId": child._test_van.tracker_imei},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": os.environ["TRACCAR_WEBHOOK_SECRET"]},
+        )
+
+        output = await communicator.receive_output(timeout=1)
+        self.assertEqual(output["type"], "websocket.close")

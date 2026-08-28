@@ -136,10 +136,24 @@ def arrival_webhook(request):
         gym_route = Route.objects.filter(destination=traccar_fence)
         candidates = Child.objects.filter(route__in=gym_route)
 
+        channel_layer = get_channel_layer()
+
         for child in candidates:
             child.active_ride = False
             notify_parent(child, 'Van has arrived to Ginas Gymnastics')
             child.save()
+
+            # Close any live-map socket already open for this child's ride -
+            # active_ride=False alone doesn't affect a connection that's
+            # already been accepted.
+            if channel_layer is not None:
+                async_to_sync(channel_layer.group_send)(
+                    f"{GROUP_NAME}_{child.route.van_id}",
+                    {
+                        "type": "ride_ended",
+                        "route_id": child.route_id,
+                    },
+                )
 
 
     return JsonResponse({"status": "ok"})
