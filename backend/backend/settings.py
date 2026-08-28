@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -133,6 +134,10 @@ DATABASES = {
     }
 }
 
+# overwrite database settings if DATABASE_URL is provided (render)
+db_from_env = dj_database_url.config(conn_max_age=600, ssl_require=False)
+if db_from_env:
+    DATABASES['default'].update(db_from_env)
 
 # custom user model access
 AUTH_USER_MODEL = 'accounts.User'
