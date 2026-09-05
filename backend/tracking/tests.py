@@ -8,7 +8,7 @@ from accounts.models import Child, ChildSchedule, User
 from asgiref.sync import sync_to_async
 from channels.testing import HttpCommunicator, WebsocketCommunicator
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
@@ -17,6 +17,13 @@ from backend.asgi import application
 
 from .consumers import VanPositionConsumer
 from .models import ArrivalEvent
+
+# In-memory cache and channel layer: the suite must run without a live
+# Redis, and test tickets must never land in the real instance.
+in_memory_backends = override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+)
 
 
 # Create your tests here.
@@ -126,6 +133,7 @@ class WebhookTest(TestCase):
         self.assertEqual(ArrivalEvent.objects.count(), 0)
 
 
+@in_memory_backends
 class PositionViewTest(TestCase):
     def setUp(self):
         self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
@@ -336,6 +344,7 @@ class TaskTest(TestCase):
         mock_task.delay_on_commit.assert_called_once()
 
 
+@in_memory_backends
 class WebSocketAuthTest(TestCase):
     ORIGIN_HEADERS = [(b"origin", b"http://localhost:8000")]
 

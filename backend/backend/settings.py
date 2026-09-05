@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
@@ -10,6 +11,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 load_dotenv(BASE_DIR / ".env")
+
+# One Redis instance, split by database: /0 Celery broker, /1 channel layer,
+# /2 cache. REDIS_URL must not carry a db number - any path is dropped here.
+_redis = urlsplit(os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
+REDIS_BASE_URL = urlunsplit((_redis.scheme, _redis.netloc, "", "", ""))
 
 
 # Quick-start development settings - unsuitable for production
@@ -37,6 +43,11 @@ ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 
 if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must be set when DEBUG=False")
+
+# always allow localhost so the container's own healthcheck (which hits
+# http://localhost:8000/health/ from inside the container) isn't rejected
+if "localhost" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("localhost")
 
 CSRF_TRUSTED_ORIGINS = [
     f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhosts", "127.0.0.1", "testserver")
@@ -96,9 +107,8 @@ REST_FRAMEWORK = {
 
 
 # Celery Configuration
-CELERY_BROKER_URL = "redis://localhost:6379"
+CELERY_BROKER_URL = f"{REDIS_BASE_URL}/0"
 
-CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
 
@@ -179,13 +189,14 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [f"{REDIS_BASE_URL}/1"],
         },
     },
 }
@@ -193,7 +204,7 @@ CHANNEL_LAYERS = {
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/0",
+        "LOCATION": f"{REDIS_BASE_URL}/2",
         "OPTIONS": {
             "SOCKET_CONNECT_TIMEOUT": 5,
             "SOCKET_TIMEOUT": 5,
