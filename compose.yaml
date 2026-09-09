@@ -26,7 +26,7 @@ services:
       retries: 10
 
   traccar:
-    image: traccar/traccar:latest
+    image: traccar/traccar:6.14.5
     restart: unless-stopped
     environment:
       CONFIG_USE_ENVIRONMENT_VARIABLES: "true"
@@ -69,7 +69,7 @@ services:
     image: ginagymnastics-backend
     restart: unless-stopped
     entrypoint: []
-    command: celery -A backend worker -l info
+    command: celery -A backend worker -l info --concurrency=2
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
