@@ -44,14 +44,17 @@ ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must be set when DEBUG=False")
 
-# always allow localhost so the container's own healthcheck (which hits
-# http://localhost:8000/health/ from inside the container) isn't rejected
-if "localhost" not in ALLOWED_HOSTS:
-    ALLOWED_HOSTS.append("localhost")
-
 CSRF_TRUSTED_ORIGINS = [
     f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhosts", "127.0.0.1", "testserver")
 ]
+
+# "django" is the compose service name: traccar posts webhooks to
+# http://django:8000/, and the container healthcheck sends the same Host.
+# Only reachable from inside the compose network - caddy, the sole public
+# entrypoint, serves the DOMAIN host only and never forwards this one.
+# Added after CSRF_TRUSTED_ORIGINS so it stays out of that list.
+if "django" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("django")
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
