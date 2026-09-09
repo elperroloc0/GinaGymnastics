@@ -224,12 +224,3 @@ class WebSocketTicketView(APIView):
 
 
 
-'''curl -s -X POST http://127.0.0.1:8000/webhooks/arrival/ \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Secret: secret" \
-  -d '{"event": {"id": 2, "deviceId": 1, "type": "geofenceEnter", "eventTime": "2026-07-15T18:30:17.386+00:00", "positionId": 9, "geofenceId": 1}, "device": {"id": 1, "name": "Cla", "uniqueId": "862464068675730"}, "geofence": {"id": 1, "name": "Home"}}'
-'''
-
-
-'''curl "http://localhost:5055/?id=IMEI12345&lat=25.72&lon=-80.43"
-'''

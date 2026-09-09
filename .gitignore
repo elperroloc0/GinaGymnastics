@@ -212,8 +212,6 @@ __marimo__/
 *.vsix
 
 
-traccar/traccar.xml
-
 # claude
 /.claude
 
