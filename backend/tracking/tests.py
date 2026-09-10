@@ -433,7 +433,12 @@ class WebSocketAuthTest(TestCase):
         result = await communicator.receive_from()
         result = json.loads(result)
 
-        self.assertEqual(result, {"lat": 25.72, "lon": -80.43})
+        # van_id lets an operator watching every van tell them apart;
+        # device_time is what the parent's staleness counter measures from.
+        self.assertEqual(result["lat"], 25.72)
+        self.assertEqual(result["lon"], -80.43)
+        self.assertEqual(result["van_id"], self.van.id)
+        self.assertIn("device_time", result)
         await communicator.disconnect()
 
     async def _make_child(self, parent, imei, traccar_id_offset, **child_kwargs):

@@ -215,4 +215,7 @@ __marimo__/
 # claude
 /.claude
 
+# design canvas working files
+/design
+
 

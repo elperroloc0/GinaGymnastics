@@ -14,13 +14,14 @@ from django.views.decorators.csrf import csrf_exempt
 from fleet.models import GeoFence, Route, Van
 from notifications.services import notify_parent
 from rest_framework import generics
+from rest_framework import permissions
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from tracking.models import ArrivalEvent
+from tracking.models import ArrivalEvent, Position
 
 from .consumers import GROUP_NAME, OPERATORS_GROUP
-from .serializers import ArrivalEventSerializer
+from .serializers import ArrivalEventSerializer, PositionSerializer
 
 TYPE_MAP = {
         "geofenceExit": ArrivalEvent.ArrivalType.EXIT,
@@ -44,6 +45,22 @@ def _get_request_json(request):
         return None
     # print(json.dumps(data, indent=3))
     return data
+
+
+def _position_time(position):
+    """The tracker's own clock for this fix.
+
+    Traccar sends deviceTime; fixTime is the same instant from the GPS module
+    and is the better fallback. Server time is the last resort - it makes the
+    fix look fresher than it is, so it must never be preferred over either.
+    """
+    for key in ("deviceTime", "fixTime"):
+        raw = position.get(key)
+        if raw:
+            parsed = parse_datetime(raw)
+            if parsed is not None:
+                return parsed
+    return timezone.now()
 
 
 def _get_van(imei):
@@ -167,32 +184,51 @@ def traccar_position(request):
     if not data:
         return JsonResponse({"error": "invalid json"}, status=400)
 
-    lat = data.get("position", {}).get("latitude")
-    lon = data.get("position", {}).get("longitude")
+    position = data.get("position", {})
+    lat = position.get("latitude")
+    lon = position.get("longitude")
+
+    # A fix without coordinates is not a fix. Storing it would put a null island
+    # row in the history and push a marker to (0, 0) on every open map.
+    if lat is None or lon is None:
+        return JsonResponse({"status": "no coordinates"})
 
     imei = data.get("device", {}).get("uniqueId")
     van = _get_van(imei)
     if van is None:
         return JsonResponse({"status": "unknown device"})
 
+    device_time = _position_time(position)
+
+    Position.objects.create(
+        van=van, latitude=lat, longitude=lon, device_time=device_time
+    )
+
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return JsonResponse({"status": "channel layer unavailable"}, status=500)
 
-    async_to_sync(channel_layer.group_send)(
-        f"{GROUP_NAME}_{van.id}",
+    # van_id and device_time are both required by the clients: operators watch
+    # every van through one socket and can't tell them apart otherwise, and the
+    # parent's "last fix N minutes ago" is measured from device_time.
+    payload = json.dumps(
         {
-            "type": "van_position_update",
-            "data": json.dumps({"lat": lat, "lon": lon}),
-        },
+            "van_id": van.id,
+            "lat": float(lat),
+            "lon": float(lon),
+            "device_time": device_time.isoformat(),
+        }
     )
-    async_to_sync(channel_layer.group_send)(
-            f"{OPERATORS_GROUP}",
+
+    for group in (f"{GROUP_NAME}_{van.id}", OPERATORS_GROUP):
+        async_to_sync(channel_layer.group_send)(
+            group,
             {
                 "type": "van_position_update",
-                "data": json.dumps({"lat": lat, "lon": lon}),
+                "data": payload,
             },
         )
+
     return JsonResponse({"status": "ok"})
 
 
@@ -205,6 +241,61 @@ class ArrivalEventList(generics.ListAPIView):
         return ArrivalEvent.objects.filter(geo_fence__routes_from__children__parent=user)
 
     serializer_class = ArrivalEventSerializer
+
+
+class IsOperator(permissions.BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (user.role == User.Roles.OPERATOR or user.is_superuser)
+        )
+
+
+class PositionList(generics.ListAPIView):
+    """Position history for one van - the console's "Replay today".
+
+    Operators only, on purpose. The live socket deliberately gates a parent to
+    their own child AND to an active ride (`is_ride_active`); a history endpoint
+    open to parents would hand them the van's whereabouts outside ride windows
+    and quietly undo that gate.
+
+    Query params: `van` (required), `since` / `until` (ISO 8601, optional).
+    Defaults to the current local day, which is what Replay today asks for.
+    """
+
+    serializer_class = PositionSerializer
+    permission_classes = [IsAuthenticated, IsOperator]
+
+    def get_queryset(self):
+        van_id = self.request.query_params.get("van")
+        if not van_id:
+            return Position.objects.none()
+
+        qs = Position.objects.filter(van_id=van_id)
+
+        since = self.request.query_params.get("since")
+        until = self.request.query_params.get("until")
+
+        since_dt = parse_datetime(since) if since else None
+        until_dt = parse_datetime(until) if until else None
+
+        if since_dt is None and until_dt is None:
+            # Local midnight, not UTC: "today" is the operator's day, and near
+            # midnight the two disagree - the same reason the arrival webhook
+            # works in localtime.
+            local_now = timezone.localtime(timezone.now())
+            since_dt = timezone.make_aware(
+                datetime.combine(local_now.date(), datetime.min.time())
+            )
+
+        if since_dt is not None:
+            qs = qs.filter(device_time__gte=since_dt)
+        if until_dt is not None:
+            qs = qs.filter(device_time__lte=until_dt)
+
+        return qs.order_by("device_time")
 
 
 class WebSocketTicketView(APIView):

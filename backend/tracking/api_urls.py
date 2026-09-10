@@ -4,5 +4,6 @@ from . import views
 
 urlpatterns = [
     path("events/", views.ArrivalEventList.as_view()),
+    path("positions/", views.PositionList.as_view()),
     path("ws-ticket/", views.WebSocketTicketView.as_view()), # type: ignore
 ]

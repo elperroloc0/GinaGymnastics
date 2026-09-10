@@ -1,9 +1,13 @@
 from urllib.parse import parse_qs
 
+import json
+
 from accounts.models import Child, User
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from fleet.models import Van
 
+from .models import Position
 from .services import is_ride_active
 
 GROUP_NAME = "van_position"
@@ -19,6 +23,39 @@ class VanPositionConsumer(AsyncWebsocketConsumer):
         except (Child.DoesNotExist, ValueError):
             return None
 
+    @database_sync_to_async
+    def get_seed_positions(self, van_ids):
+        """Last known fix per van, in the same shape as a live update.
+
+        Without this the map is empty until the tracker's next ping - up to a
+        minute of nothing after every page load - and the parent's staleness
+        counter has no timestamp to count from until then.
+        """
+        out = []
+        for van_id in van_ids:
+            last = (
+                Position.objects.filter(van_id=van_id)
+                .order_by("-device_time")
+                .first()
+            )
+            if last is None:
+                continue
+            out.append(
+                json.dumps(
+                    {
+                        "van_id": last.van_id,
+                        "lat": float(last.latitude),
+                        "lon": float(last.longitude),
+                        "device_time": last.device_time.isoformat(),
+                    }
+                )
+            )
+        return out
+
+    @database_sync_to_async
+    def get_all_van_ids(self):
+        return list(Van.objects.values_list("id", flat=True))
+
     async def connect(self):
         user = self.scope["user"] #type: ignore
 
@@ -28,8 +65,12 @@ class VanPositionConsumer(AsyncWebsocketConsumer):
 
         self.groups_joined = []
 
+        self.route_id = None
+        self.seed_van_ids = []
+
         if user.role == User.Roles.OPERATOR or user.is_superuser: #type: ignore
             self.groups_joined.append(OPERATORS_GROUP)
+            self.seed_van_ids = await self.get_all_van_ids()
         else:
             query_dict = parse_qs(self.scope["query_string"].decode("utf-8")) # type: ignore
             child_id_list = query_dict.get("child_id")
@@ -53,12 +94,19 @@ class VanPositionConsumer(AsyncWebsocketConsumer):
 
             self.child_id = child.id
             self.route_id = child.route_id
+            self.seed_van_ids = [child.route.van_id]
             self.groups_joined.append(f"{GROUP_NAME}_{child.route.van_id}")
 
         for group in self.groups_joined:
             await self.channel_layer.group_add(group, self.channel_name)
 
         await self.accept()
+
+        # Seeded after accept() so the client is already listening. These are
+        # indistinguishable from live updates on the wire, deliberately: the
+        # client needs no separate code path for "first position".
+        for payload in await self.get_seed_positions(self.seed_van_ids):
+            await self.send(text_data=payload)
 
     async def receive(self, text_data):
         await self.send(text_data=text_data)
