@@ -45,7 +45,7 @@ if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must be set when DEBUG=False")
 
 CSRF_TRUSTED_ORIGINS = [
-    f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhosts", "127.0.0.1", "testserver")
+    f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhost", "127.0.0.1", "testserver")
 ]
 
 # "django" is the compose service name: traccar posts webhooks to
@@ -57,6 +57,17 @@ if "django" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("django")
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+if not DEBUG:
+    # Caddy terminates TLS in front of us (SECURE_PROXY_SSL_HEADER above), so
+    # these are safe to force unconditionally once DEBUG is off - there is no
+    # real production request that isn't already HTTPS.
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 
 # Application definition
@@ -94,18 +105,29 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# jwt auth is off for dev-mode:
-DEFAULT_AUTHENTICATION_CLASSES = ['rest_framework_simplejwt.authentication.JWTAuthentication',]
+# JWT auth is always on. In DEBUG we additionally accept Basic/Session so the
+# browsable API (api-auth/) still works for manual poking - previously this
+# branch REPLACED JWTAuthentication instead of adding to it, which meant a
+# real `Authorization: Bearer <token>` header was silently ignored whenever
+# DEBUG=True (i.e. every local dev run), and every IsAuthenticated endpoint
+# 401'd for a real frontend request even with a valid token.
+DEFAULT_AUTHENTICATION_CLASSES = ['rest_framework_simplejwt.authentication.JWTAuthentication']
 
 if DEBUG:
-    DEFAULT_AUTHENTICATION_CLASSES = ['rest_framework.authentication.BasicAuthentication', 'rest_framework.authentication.SessionAuthentication',]
+    DEFAULT_AUTHENTICATION_CLASSES += [
+        'rest_framework.authentication.BasicAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ]
 
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES' : DEFAULT_AUTHENTICATION_CLASSES,
     'DEFAULT_PERMISSION_CLASSES' : [
         'rest_framework.permissions.IsAuthenticated',
-    ]
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '10/min',
+    },
 }
 
 

@@ -1,9 +1,15 @@
 from accounts.permission import IsOperatorOrReadOnly
 from django.shortcuts import render
 from rest_framework import permissions, viewsets
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import Child, ChildSchedule, User
-from .serializers import ChildScheduleSerializer, ChildSerializer
+from .serializers import (
+    ChildScheduleSerializer,
+    ChildSerializer,
+    RoleTokenObtainPairSerializer,
+)
 
 # Create your views here.
 
@@ -29,3 +35,9 @@ class ChildScheduleViewSet(viewsets.ModelViewSet):
 
     serializer_class = ChildScheduleSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
+
+
+class RoleTokenObtainPairView(TokenObtainPairView):
+    serializer_class = RoleTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"

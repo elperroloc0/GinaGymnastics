@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import uuid
@@ -30,13 +31,13 @@ TYPE_MAP = {
 
 
 def _check_secret(request):
-    web_secret = request.headers.get("X-Webhook-Secret")
+    web_secret = request.headers.get("X-Webhook-Secret", "")
     traccar_secret = os.environ.get("TRACCAR_WEBHOOK_SECRET", "")
 
-    if web_secret != traccar_secret:
-        return False
-
-    return True
+    # Constant-time compare - a plain `==` short-circuits on the first
+    # mismatched byte, which leaks how many leading characters were guessed
+    # correctly via response-time differences.
+    return hmac.compare_digest(web_secret, traccar_secret)
 
 def _get_request_json(request):
     try:
