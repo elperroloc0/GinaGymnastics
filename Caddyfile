@@ -4,5 +4,22 @@
         file_server
     }
 
-    reverse_proxy django:8000
+    # Everything Django actually owns - the API, the webhook endpoints Traccar
+    # calls, the admin, the WebSocket upgrade, and DRF's browsable-API login.
+    # Caddy proxies a WebSocket upgrade transparently like any other request,
+    # so /ws/* needs nothing special beyond being in this matcher.
+    @backend path /api/* /webhooks/* /admin/* /ws/* /api-auth/*
+    handle @backend {
+        reverse_proxy django:8000
+    }
+
+    # Everything else is the frontend's single-page app. try_files falls back
+    # to index.html for any path that isn't a real static asset, which is
+    # harmless SPA-fallback insurance even though there's no client-side
+    # router today.
+    handle {
+        root * /srv/frontend
+        try_files {path} /index.html
+        file_server
+    }
 }

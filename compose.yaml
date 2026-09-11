@@ -80,6 +80,18 @@ services:
       redis:
         condition: service_healthy
 
+  # One-shot: builds the frontend and copies its dist/ into frontend_dist,
+  # then exits. `docker compose up` runs it before caddy needs the volume;
+  # rerun it (or `up --build`) after a frontend change to refresh the volume.
+  frontend-build:
+    build:
+      context: ../gina-ride-tracker-web
+      args:
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN}
+    image: gina-ride-tracker-web-build
+    volumes:
+      - frontend_dist:/out
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -91,15 +103,20 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - static_data:/srv/static:ro
+      - frontend_dist:/srv/frontend:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - django
+      django:
+        condition: service_started
+      frontend-build:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
   traccar_data:
   traccar_logs:
   static_data:
+  frontend_dist:
   caddy_data:
   caddy_config:

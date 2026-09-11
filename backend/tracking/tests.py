@@ -8,7 +8,7 @@ from accounts.models import Child, ChildSchedule, User
 from asgiref.sync import sync_to_async
 from channels.testing import HttpCommunicator, WebsocketCommunicator
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
@@ -345,7 +345,17 @@ class TaskTest(TestCase):
 
 
 @in_memory_backends
-class WebSocketAuthTest(TestCase):
+class WebSocketAuthTest(TransactionTestCase):
+    # Not TestCase: these tests drive an ASGI consumer through
+    # database_sync_to_async, which runs its ORM calls on a different thread
+    # than the test method itself. TestCase's per-test transaction lives only
+    # on the main thread's connection, so a query from that other thread can
+    # find it already torn down mid-test ("the connection is closed") against
+    # a real database (Postgres in particular - sqlite's looser locking can
+    # mask it). TransactionTestCase runs each test against real committed
+    # state instead of a rolled-back transaction, which every thread sees
+    # consistently, at the cost of resetting tables via truncation instead of
+    # a (faster) rollback.
     ORIGIN_HEADERS = [(b"origin", b"http://localhost:8000")]
 
     async def asyncSetUp(self):
