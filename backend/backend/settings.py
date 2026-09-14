@@ -72,14 +72,21 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 if not DEBUG:
     # Caddy terminates TLS in front of us (SECURE_PROXY_SSL_HEADER above), so
-    # these are safe to force unconditionally once DEBUG is off - there is no
-    # real production request that isn't already HTTPS.
+    # these are safe to force unconditionally once DEBUG is off - every real
+    # public request already arrives as HTTPS by the time Django sees it.
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+# The one exception to the above: the container healthcheck (compose.yaml)
+# calls this over plain HTTP straight to localhost:8000, bypassing Caddy
+# entirely, so it never carries X-Forwarded-Proto. Without this exemption
+# SECURE_SSL_REDIRECT 301s it to https://, which nothing inside the
+# container serves, and the healthcheck fails.
+SECURE_REDIRECT_EXEMPT = [r'^health/$']
 
 
 # Application definition
