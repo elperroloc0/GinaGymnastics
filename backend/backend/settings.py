@@ -81,12 +81,14 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
-# The one exception to the above: the container healthcheck (compose.yaml)
-# calls this over plain HTTP straight to localhost:8000, bypassing Caddy
-# entirely, so it never carries X-Forwarded-Proto. Without this exemption
-# SECURE_SSL_REDIRECT 301s it to https://, which nothing inside the
-# container serves, and the healthcheck fails.
-SECURE_REDIRECT_EXEMPT = [r'^health/$']
+# The exceptions to the above: requests that come from other containers on
+# the compose network rather than through Caddy, so they never carry
+# X-Forwarded-Proto - the container healthcheck (compose.yaml), and Traccar
+# posting position/arrival webhooks straight to http://django:8000/webhooks/.
+# Without this exemption SECURE_SSL_REDIRECT 301s them to https://, which
+# nothing inside the container serves, so the healthcheck fails and every
+# position/arrival webhook silently never arrives.
+SECURE_REDIRECT_EXEMPT = [r'^health/$', r'^webhooks/']
 
 
 # Application definition
