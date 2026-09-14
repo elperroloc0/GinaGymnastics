@@ -35,7 +35,10 @@ services:
     ports:
       - "5027:5027"
       - "5027:5027/udp"
-      - "8082:8082"
+      # Web UI - loopback only, on purpose: reach it via an SSH tunnel
+      # (ssh -L 8082:localhost:8082 ...), never expose it to the public
+      # internet directly (no TLS, password-based admin login).
+      - "127.0.0.1:8082:8082"
     volumes:
       - ./traccar/traccar.xml:/opt/traccar/conf/traccar.xml:ro
       - traccar_data:/opt/traccar/data
