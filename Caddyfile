@@ -10,5 +10,8 @@
     # Traccar calls, the admin, the WebSocket upgrade, and DRF's browsable-API
     # login. Caddy proxies a WebSocket upgrade transparently like any other
     # request, so /ws/* needs nothing special beyond being in this matcher.
-    reverse_proxy /api/* /webhooks/* /admin/* /ws/* /api-auth/* django:8000
+    @backend path /api/* /webhooks/* /admin/* /ws/* /api-auth/*
+    handle @backend {
+        reverse_proxy django:8000
+    }
 }
