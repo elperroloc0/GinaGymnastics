@@ -1,5 +1,9 @@
+import secrets
+from datetime import timedelta
+
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 from fleet.models import Route
 from phonenumber_field.modelfields import PhoneNumberField
 
@@ -54,3 +58,26 @@ class ChildSchedule(models.Model):
 
     def __str__(self) -> str:
         return f'{self.child} -- {self.get_weekday_display()} {self.pickup_hour}' # type: ignore
+
+
+def _generate_invite_token() -> str:
+    # 32 random bytes, URL-safe - short enough for a text message link, long
+    # enough that guessing one is not a realistic attack.
+    return secrets.token_urlsafe(32)
+
+
+class ParentInvite(models.Model):
+    """A one-time link texted to a newly-enrolled parent to set their own
+    password. Created alongside the User by the operator-enrollment endpoint,
+    which gives the parent an unusable password (accounts.views.EnrollParentView)
+    until they use this to set a real one - never texted to an existing parent."""
+
+    TTL = timedelta(hours=48)
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='invites')
+    token = models.CharField(max_length=64, unique=True, default=_generate_invite_token)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    def is_valid(self) -> bool:
+        return self.used_at is None and timezone.now() < self.created_at + self.TTL

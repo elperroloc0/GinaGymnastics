@@ -127,6 +127,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/min',
+        'set_password': '10/min',
     },
 }
 

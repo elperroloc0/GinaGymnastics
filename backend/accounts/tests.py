@@ -1,5 +1,6 @@
 import base64
 import json
+from unittest.mock import patch
 
 from django.conf import settings
 from django.core.cache import cache
@@ -7,7 +8,7 @@ from django.test import TestCase, override_settings
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
 
-from .models import Child, User
+from .models import Child, ParentInvite, User
 
 JWT_AUTH_CLASS = "rest_framework_simplejwt.authentication.JWTAuthentication"
 
@@ -213,3 +214,127 @@ class CrossParentIsolationTest(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+
+@patch("accounts.views.debug_sms")
+class EnrollParentTest(TestCase):
+    """The operator-facing enrollment flow: create a parent + child + weekly
+    schedule in one call, text a set-password link to a genuinely new parent,
+    and never text (or duplicate) one who already has an account.
+    """
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="enroll-operator", password="pw12345!", role=User.Roles.OPERATOR)
+        self.parent = User.objects.create_user(username="enroll-parent", password="pw12345!", role=User.Roles.PARENT)
+
+        self.van = Van.objects.create(name="ENROLL-VAN", tracker_imei="ENROLL-IMEI")
+        school = GeoFence.objects.create(name="Enroll School", location_type=GeoFence.LocationTypes.SCHOOL, latitude=25.5, longitude=-80.5, radius=50, traccar_id=501)
+        gym = GeoFence.objects.create(name="Enroll Gym", location_type=GeoFence.LocationTypes.GINAS_GYM, latitude=25.6, longitude=-80.6, radius=50, traccar_id=502)
+        self.route = Route.objects.create(van=self.van, origin=school, destination=gym)
+
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def _payload(self, phone="+13055550100"):
+        return {
+            "parent_phone": phone,
+            "parent_name": "Carolina Alvarez",
+            "child_name": "Maya Alvarez",
+            "route": self.route.id,
+            "weekdays": [0, 2, 4],
+            "pickup_hour": "15:00:00",
+        }
+
+    def test_new_phone_creates_parent_and_texts_invite(self, debug_sms):
+        response = self.client_operator.post("/api/enroll-parent/", self._payload(), content_type="application/json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()["invited"])
+
+        new_parent = User.objects.get(phone_number="+13055550100")
+        self.assertEqual(new_parent.role, User.Roles.PARENT)
+        self.assertFalse(new_parent.has_usable_password())
+        self.assertEqual(new_parent.children.count(), 1)
+        self.assertEqual(new_parent.children.first().schedule.count(), 3)
+        self.assertEqual(ParentInvite.objects.filter(user=new_parent).count(), 1)
+        debug_sms.delay_on_commit.assert_called_once()
+        self.assertEqual(debug_sms.delay_on_commit.call_args[0][0], "+13055550100")
+
+    def test_existing_phone_reuses_parent_and_does_not_text(self, debug_sms):
+        self.parent.phone_number = "+13055550200"
+        self.parent.save()
+
+        response = self.client_operator.post(
+            "/api/enroll-parent/", self._payload(phone="+13055550200"), content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.json()["invited"])
+        self.assertEqual(User.objects.filter(phone_number="+13055550200").count(), 1)
+        self.assertEqual(self.parent.children.count(), 1)
+        debug_sms.delay_on_commit.assert_not_called()
+
+    def test_parent_cannot_enroll(self, debug_sms):
+        response = self.client_parent.post("/api/enroll-parent/", self._payload(), content_type="application/json")
+        self.assertEqual(response.status_code, 403)
+        debug_sms.delay_on_commit.assert_not_called()
+
+
+@locmem_cache
+class SetPasswordTest(TestCase):
+    # /api/set-password/ is throttled (ScopedRateThrottle, scope "set_password"),
+    # same reasoning as RoleTokenClaimTest above: locmem avoids needing a real
+    # Redis, and cache.clear() keeps one test's attempts from throttling the next.
+    def setUp(self):
+        cache.clear()
+        # No password kwarg - create_user() gives an unusable one, same as a
+        # freshly-enrolled parent from EnrollParentView.
+        self.parent = User.objects.create_user(username="+13055550300", role=User.Roles.PARENT)
+        self.invite = ParentInvite.objects.create(user=self.parent)
+
+    def test_valid_token_sets_password_and_signs_in(self):
+        response = self.client.post(
+            "/api/set-password/",
+            {"token": self.invite.token, "password": "a-strong-passphrase-1"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+
+        self.parent.refresh_from_db()
+        self.assertTrue(self.parent.check_password("a-strong-passphrase-1"))
+        self.invite.refresh_from_db()
+        self.assertIsNotNone(self.invite.used_at)
+
+    def test_token_is_single_use(self):
+        self.client.post(
+            "/api/set-password/",
+            {"token": self.invite.token, "password": "a-strong-passphrase-1"},
+            content_type="application/json",
+        )
+        second = self.client.post(
+            "/api/set-password/",
+            {"token": self.invite.token, "password": "a-different-passphrase-2"},
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 400)
+
+    def test_unknown_token_rejected(self):
+        response = self.client.post(
+            "/api/set-password/",
+            {"token": "not-a-real-token", "password": "a-strong-passphrase-1"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_weak_password_rejected(self):
+        response = self.client.post(
+            "/api/set-password/",
+            {"token": self.invite.token, "password": "1234"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.parent.refresh_from_db()
+        self.assertFalse(self.parent.has_usable_password())

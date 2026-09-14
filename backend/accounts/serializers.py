@@ -1,3 +1,6 @@
+from django.contrib.auth.password_validation import validate_password
+from fleet.models import Route
+from phonenumber_field.serializerfields import PhoneNumberField
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -34,3 +37,31 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
         token["is_superuser"] = user.is_superuser
         token["first_name"] = user.first_name
         return token
+
+
+class EnrollParentSerializer(serializers.Serializer):
+    """Input for EnrollParentView - operator-only, creates (or reuses) a
+    parent account plus one enrolled child with a weekly schedule."""
+
+    parent_phone = PhoneNumberField()
+    parent_name = serializers.CharField(required=False, allow_blank=True, default='')
+    child_name = serializers.CharField(max_length=150)
+    route = serializers.PrimaryKeyRelatedField(queryset=Route.objects.all())
+    weekdays = serializers.ListField(
+        child=serializers.ChoiceField(choices=ChildSchedule.Weekday.choices),
+        allow_empty=False,
+    )
+    pickup_hour = serializers.TimeField()
+
+
+class SetPasswordSerializer(serializers.Serializer):
+    """Input for SetPasswordView - the public endpoint a ParentInvite link
+    lands on. Not a ModelSerializer: there is no single model instance being
+    read or written here, just two independent fields to validate."""
+
+    token = serializers.CharField()
+    password = serializers.CharField()
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
