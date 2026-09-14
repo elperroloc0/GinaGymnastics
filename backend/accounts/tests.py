@@ -338,3 +338,57 @@ class SetPasswordTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.parent.refresh_from_db()
         self.assertFalse(self.parent.has_usable_password())
+
+
+@locmem_cache
+class FlexibleLoginTest(TestCase):
+    """accounts.backends.FlexibleLoginBackend: /api/token/ accepts a
+    username, an email, or a phone number - whichever the account actually
+    has - not just Django's default USERNAME_FIELD lookup.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="flex-user",
+            email="Flex@Example.com",
+            phone_number="+13055550111",
+            password="pw12345!",
+            role=User.Roles.PARENT,
+        )
+
+    def _login(self, identifier, password="pw12345!"):
+        return self.client.post(
+            "/api/token/", {"username": identifier, "password": password}, content_type="application/json"
+        )
+
+    def test_login_by_username(self):
+        self.assertEqual(self._login("flex-user").status_code, 200)
+
+    def test_login_by_email_is_case_insensitive(self):
+        self.assertEqual(self._login("flex@example.com").status_code, 200)
+
+    def test_login_by_phone_in_various_formats(self):
+        for identifier in ("+13055550111", "3055550111", "(305) 555-0111"):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(self._login(identifier).status_code, 200)
+
+    def test_wrong_password_still_rejected(self):
+        self.assertEqual(self._login("flex-user", password="wrong").status_code, 401)
+
+    def test_unknown_identifier_rejected(self):
+        self.assertEqual(self._login("nobody@example.com").status_code, 401)
+
+    def test_username_login_is_not_confused_by_a_blank_phone_decoy(self):
+        # Regression: _normalize_phone("flex-user") strips every non-digit
+        # down to "", and User.phone_number is blank (not null) when unset -
+        # a bare Q(phone_number=normalized) would then match this decoy
+        # account too, and .first() could silently authenticate as the
+        # wrong user instead of rejecting or matching only "flex-user".
+        decoy = User.objects.create_user(username="decoy", password="decoy-pass!", role=User.Roles.PARENT)
+        self.assertEqual(decoy.phone_number, "")
+
+        response = self._login("flex-user")
+        self.assertEqual(response.status_code, 200)
+        payload = _decode_jwt_payload(response.json()["access"])
+        self.assertEqual(payload["user_id"], str(self.user.id))

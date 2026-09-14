@@ -48,6 +48,18 @@ CSRF_TRUSTED_ORIGINS = [
     f"https://{h}" for h in ALLOWED_HOSTS if h not in ("localhost", "127.0.0.1", "testserver")
 ]
 
+# Frontend is a separate origin (Vercel), so the browser needs explicit CORS
+# headers on API responses - ALLOWED_HOSTS/CSRF_TRUSTED_ORIGINS above don't
+# cover this, they're about the Host header and CSRF, not CORS.
+_cors_allowed_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS")
+if _cors_allowed_origins_env is None:
+    _cors_allowed_origins_env = "http://localhost:5173," if DEBUG else ""
+
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_allowed_origins_env.split(",") if o.strip()]
+
+if not DEBUG and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured("CORS_ALLOWED_ORIGINS must be set when DEBUG=False")
+
 # "django" is the compose service name: traccar posts webhooks to
 # http://django:8000/, and the container healthcheck sends the same Host.
 # Only reachable from inside the compose network - caddy, the sole public
@@ -80,6 +92,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    'corsheaders',
+
     'accounts.apps.AccountsConfig',
 
     'fleet.apps.FleetConfig',
@@ -97,6 +111,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -177,6 +192,11 @@ if db_from_env:
 
 # custom user model access
 AUTH_USER_MODEL = 'accounts.User'
+
+# Login accepts username, email, or phone number - see accounts/backends.py.
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.FlexibleLoginBackend',
+]
 
 
 # Password validation
