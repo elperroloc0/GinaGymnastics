@@ -4,22 +4,11 @@
         file_server
     }
 
-    # Everything Django actually owns - the API, the webhook endpoints Traccar
-    # calls, the admin, the WebSocket upgrade, and DRF's browsable-API login.
-    # Caddy proxies a WebSocket upgrade transparently like any other request,
-    # so /ws/* needs nothing special beyond being in this matcher.
-    @backend path /api/* /webhooks/* /admin/* /ws/* /api-auth/*
-    handle @backend {
-        reverse_proxy django:8000
-    }
-
-    # Everything else is the frontend's single-page app. try_files falls back
-    # to index.html for any path that isn't a real static asset, which is
-    # harmless SPA-fallback insurance even though there's no client-side
-    # router today.
-    handle {
-        root * /srv/frontend
-        try_files {path} /index.html
-        file_server
-    }
+    # This domain is API-only now - the frontend is deployed separately on
+    # Vercel and talks to it cross-origin (see VITE_API_URL, CORS_ALLOWED_ORIGINS).
+    # Everything below is what Django owns: the API, the webhook endpoints
+    # Traccar calls, the admin, the WebSocket upgrade, and DRF's browsable-API
+    # login. Caddy proxies a WebSocket upgrade transparently like any other
+    # request, so /ws/* needs nothing special beyond being in this matcher.
+    reverse_proxy /api/* /webhooks/* /admin/* /ws/* /api-auth/* django:8000
 }
