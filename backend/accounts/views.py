@@ -1,9 +1,11 @@
 from accounts.permission import IsOperator, IsOperatorOrReadOnly
+from django.conf import settings
 from django.db import transaction
 from django.shortcuts import render
 from django.utils import timezone
 from notifications.tasks import debug_sms
-from rest_framework import permissions, status, viewsets
+from rest_framework import mixins, permissions, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -14,11 +16,24 @@ from .serializers import (
     ChildScheduleSerializer,
     ChildSerializer,
     EnrollParentSerializer,
+    OperatorSerializer,
+    ParentSerializer,
     RoleTokenObtainPairSerializer,
     SetPasswordSerializer,
 )
 
 # Create your views here.
+
+
+def _set_password_link(token) -> str:
+    """Builds the set-password link texted to a parent (enrollment invite,
+    resend-invite). NOT request.build_absolute_uri() - that resolves against
+    this API's own domain, but /set-password/:token is a frontend (Vercel)
+    route Django doesn't serve at all, so that link 404s. The frontend's
+    origin is CORS_ALLOWED_ORIGINS (settings.py) - same value, no second
+    env var - same reasoning as tracking/views.py's arrival_webhook link."""
+    frontend_url = settings.CORS_ALLOWED_ORIGINS[0] if settings.CORS_ALLOWED_ORIGINS else ""
+    return f"{frontend_url}/set-password/{token}"
 
 class ChildViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
@@ -42,6 +57,64 @@ class ChildScheduleViewSet(viewsets.ModelViewSet):
 
     serializer_class = ChildScheduleSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
+
+
+class OperatorViewSet(viewsets.ModelViewSet):
+    """Operator-only account creation/listing for other operators - parent
+    accounts go through EnrollParentView instead, this never touches those.
+    No update/delete: deactivate() below is the only way to remove access,
+    keeping login history and FK references (e.g. audit trails) intact.
+    """
+
+    http_method_names = ["get", "post", "head", "options"]
+    serializer_class = OperatorSerializer
+    permission_classes = [permissions.IsAuthenticated, IsOperator]
+
+    def get_queryset(self):
+        return User.objects.filter(role=User.Roles.OPERATOR, is_superuser=False)
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        operator = self.get_object()
+        operator.is_active = False
+        operator.save(update_fields=["is_active"])
+        return Response(OperatorSerializer(operator).data)
+
+
+class ParentViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+    """Operator-only view/edit/deactivate for parent accounts. No create or
+    delete mixin on purpose - parents are still only created via
+    EnrollParentView, and deactivate() is the only way to remove access
+    (ModelViewSet would also need http_method_names to exclude "post" to block
+    create, but that would break the POST-based @action endpoints below too -
+    leaving CreateModelMixin/DestroyModelMixin out entirely is the clean fix)."""
+
+    serializer_class = ParentSerializer
+    permission_classes = [permissions.IsAuthenticated, IsOperator]
+
+    def get_queryset(self):
+        return User.objects.filter(role=User.Roles.PARENT).prefetch_related("children__schedule")
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        parent = self.get_object()
+        parent.is_active = False
+        parent.save(update_fields=["is_active"])
+        return Response(ParentSerializer(parent).data)
+
+    @action(detail=True, methods=["post"])
+    def resend_invite(self, request, pk=None):
+        parent = self.get_object()
+        # phone_number is blank=True on the model - a handful of real rows
+        # predate EnrollParentView (which always requires one) and have none.
+        # Without this check we'd create a ParentInvite nobody can ever use
+        # and hand Twilio an empty "to" number.
+        if not parent.phone_number:
+            return Response({"detail": "This parent has no phone number on file - add one before sending a link."}, status=400)
+        invite = ParentInvite.objects.create(user=parent)
+        link = _set_password_link(invite.token)
+        debug_sms.delay_on_commit(str(parent.phone_number), f"Gina's Gymnastics: reset your Ride Tracker access here: {link}")
+        return Response(ParentSerializer(parent).data)
 
 
 class RoleTokenObtainPairView(TokenObtainPairView):
@@ -97,7 +170,7 @@ class EnrollParentView(APIView):
             # Sent after the transaction commits (delay_on_commit, called
             # outside the `with` block above) - never text a link for rows
             # that could still be rolled back.
-            link = request.build_absolute_uri(f"/set-password/{invite.token}")
+            link = _set_password_link(invite.token)
             message = (
                 f"Gina's Gymnastics: {data['child_name']} is enrolled for van rides. "
                 f"Set up your Ride Tracker account: {link}"

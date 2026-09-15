@@ -4,7 +4,7 @@ from phonenumber_field.serializerfields import PhoneNumberField
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Child, ChildSchedule
+from .models import Child, ChildSchedule, User
 
 
 class ChildScheduleSerializer(serializers.ModelSerializer):
@@ -15,10 +15,12 @@ class ChildScheduleSerializer(serializers.ModelSerializer):
 
 class ChildSerializer(serializers.ModelSerializer):
     schedule = ChildScheduleSerializer(many=True, read_only=True)
+    parent_name = serializers.CharField(source="parent.first_name", read_only=True)
+    parent_phone_number = serializers.CharField(source="parent.phone_number", read_only=True)
 
     class Meta:
         model = Child
-        fields = ["id", "name", "parent", "route", "schedule"]
+        fields = ["id", "name", "parent", "parent_name", "parent_phone_number", "route", "schedule"]
 
 
 class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -52,6 +54,59 @@ class EnrollParentSerializer(serializers.Serializer):
         allow_empty=False,
     )
     pickup_hour = serializers.TimeField()
+
+
+class OperatorSerializer(serializers.ModelSerializer):
+    """Input/output for OperatorViewSet - operator-only account creation and
+    listing. `password` is write-only: it's set on the new account here, not
+    via a texted invite link like ParentInvite (that mechanism is
+    parent-specific)."""
+
+    password = serializers.CharField(write_only=True, validators=[validate_password])
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "first_name", "email", "phone_number", "is_active", "password"]
+        read_only_fields = ["id", "is_active"]
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = User(role=User.Roles.OPERATOR, **validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
+
+class ParentSerializer(serializers.ModelSerializer):
+    """Operator-only view/edit of a parent account. Supports PATCH, unlike
+    OperatorSerializer - phone_number/username stay in lockstep (see update()),
+    mirroring the invariant EnrollParentView sets at creation. No password
+    field anywhere: a parent's password is never operator-writable or
+    -readable, only self-service via SetPasswordView/ParentInvite."""
+
+    children = ChildSerializer(many=True, read_only=True)
+    is_registered = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "first_name", "email", "phone_number", "is_active", "is_registered", "children"]
+        read_only_fields = ["id", "username", "is_active", "is_registered", "children"]
+
+    def get_is_registered(self, obj):
+        # False until the parent actually follows their invite link and sets a
+        # real password (SetPasswordView) - set_unusable_password() at
+        # creation (EnrollParentView) is what makes this False for a new row.
+        return obj.has_usable_password()
+
+    def validate_phone_number(self, value):
+        if User.objects.exclude(pk=self.instance.pk).filter(username=str(value)).exists():
+            raise serializers.ValidationError("Another account already uses this phone number.")
+        return value
+
+    def update(self, instance, validated_data):
+        if "phone_number" in validated_data:
+            validated_data["username"] = str(validated_data["phone_number"])
+        return super().update(instance, validated_data)
 
 
 class SetPasswordSerializer(serializers.Serializer):

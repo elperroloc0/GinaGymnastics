@@ -1,8 +1,11 @@
+from unittest.mock import patch
+
 from accounts.models import Child, User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from . import traccar_client
 from .models import GeoFence, Route, Van
 
 
@@ -103,3 +106,116 @@ class FleetPermissionScopingTest(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
+
+
+class GeoFenceTraccarProvisioningTest(TestCase):
+    """GeoFenceViewSet.perform_create/update/destroy call out to Traccar's own
+    REST API to keep our GeoFence rows and Traccar's zones in sync - see
+    fleet/traccar_client.py. Mocked here the same way accounts.tests mocks
+    Twilio (@patch at the call site), since there's no live Traccar in CI.
+    """
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="geofence-operator", password="pw12345!", role=User.Roles.OPERATOR)
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+
+    @patch("fleet.views.traccar_client.create_geofence")
+    def test_create_success_saves_returned_traccar_id(self, create_geofence):
+        create_geofence.return_value = 999
+        response = self.client_operator.post(
+            "/api/geofences/",
+            {"name": "New School", "location_type": "SCHOOL", "latitude": "25.5", "longitude": "-80.5", "radius": 50},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["traccar_id"], 999)
+        create_geofence.assert_called_once_with("New School", 25.5, -80.5, 50.0)
+        self.assertEqual(GeoFence.objects.get(name="New School").traccar_id, 999)
+
+    @patch("fleet.views.traccar_client.create_geofence")
+    def test_create_failure_persists_no_row(self, create_geofence):
+        create_geofence.side_effect = traccar_client.TraccarAPIError("boom")
+        response = self.client_operator.post(
+            "/api/geofences/",
+            {"name": "Doomed", "location_type": "SCHOOL", "latitude": "25.5", "longitude": "-80.5", "radius": 50},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(GeoFence.objects.filter(name="Doomed").exists())
+
+    @patch("fleet.views.traccar_client.update_geofence")
+    def test_update_calls_traccar_with_resolved_fields(self, update_geofence):
+        fence = GeoFence.objects.create(
+            name="Old Name", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=40, traccar_id=555,
+        )
+        response = self.client_operator.patch(
+            f"/api/geofences/{fence.id}/", {"name": "New Name"}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        update_geofence.assert_called_once_with(555, "New Name", 25.1, -80.1, 40.0)
+
+    @patch("fleet.views.traccar_client.update_geofence")
+    def test_update_skips_traccar_when_only_is_active_changes(self, update_geofence):
+        fence = GeoFence.objects.create(
+            name="Fence", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=40, traccar_id=556, is_active=True,
+        )
+        response = self.client_operator.patch(
+            f"/api/geofences/{fence.id}/", {"is_active": False}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        update_geofence.assert_not_called()
+
+    @patch("fleet.views.traccar_client.delete_geofence")
+    def test_delete_removes_row_even_if_traccar_call_fails(self, delete_geofence):
+        delete_geofence.side_effect = traccar_client.TraccarAPIError("unreachable")
+        fence = GeoFence.objects.create(
+            name="Fence", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=40, traccar_id=557,
+        )
+        response = self.client_operator.delete(f"/api/geofences/{fence.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(GeoFence.objects.filter(id=fence.id).exists())
+
+    @patch("fleet.views.traccar_client.delete_geofence")
+    def test_delete_protected_geofence_returns_400_not_500(self, delete_geofence):
+        van = Van.objects.create(name="VAN-P", tracker_imei="IMEI-P")
+        school = GeoFence.objects.create(
+            name="Protected School", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=40, traccar_id=558,
+        )
+        gym = GeoFence.objects.create(
+            name="Gym", location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.2, longitude=-80.2, radius=40, traccar_id=559,
+        )
+        Route.objects.create(van=van, origin=school, destination=gym)
+
+        response = self.client_operator.delete(f"/api/geofences/{school.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(GeoFence.objects.filter(id=school.id).exists())
+        delete_geofence.assert_not_called()
+
+
+class VanProtectedDeleteTest(TestCase):
+    def setUp(self):
+        self.operator = User.objects.create_user(username="van-operator", password="pw12345!", role=User.Roles.OPERATOR)
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+
+    def test_delete_van_used_by_route_returns_400_not_500(self):
+        van = Van.objects.create(name="VAN-Q", tracker_imei="IMEI-Q")
+        school = GeoFence.objects.create(
+            name="School", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=40, traccar_id=601,
+        )
+        gym = GeoFence.objects.create(
+            name="Gym", location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.2, longitude=-80.2, radius=40, traccar_id=602,
+        )
+        Route.objects.create(van=van, origin=school, destination=gym)
+
+        response = self.client_operator.delete(f"/api/vans/{van.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Van.objects.filter(id=van.id).exists())

@@ -16,7 +16,7 @@ from rest_framework.test import APIClient
 from backend.asgi import application
 
 from .consumers import VanPositionConsumer
-from .models import ArrivalEvent
+from .models import ArrivalEvent, Position
 
 # In-memory cache and channel layer: the suite must run without a live
 # Redis, and test tickets must never land in the real instance.
@@ -134,6 +134,64 @@ class WebhookTest(TestCase):
 
 
 @in_memory_backends
+class ArrivalSmsTest(TestCase):
+    """The school-arrival SMS used to text parents a literal, unfilled
+    `<link to live map>` placeholder instead of a real link - see
+    tracking/views.py's arrival_webhook. Nothing exercised this path before:
+    test_valid_event_created above never wires up a Route/Child, so
+    notify_parent was never actually called in the old suite.
+    """
+
+    def setUp(self):
+        self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
+        self.van = Van.objects.create(name="TEST-VAN", tracker_imei="IMEI-SMS")
+        self.school = GeoFence.objects.create(
+            name="Test School", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.72, longitude=-80.43, radius=40, traccar_id=501,
+        )
+        self.gym = GeoFence.objects.create(
+            name="Test Gym", location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.8, longitude=-80.5, radius=40, traccar_id=502,
+        )
+        self.route = Route.objects.create(van=self.van, origin=self.school, destination=self.gym)
+        self.parent = User.objects.create_user(username="sms-parent", password="pw12345!", role=User.Roles.PARENT, phone_number="+13055550100")
+        self.child = Child.objects.create(name="Test Child", parent=self.parent, route=self.route)
+
+        now = timezone.localtime(timezone.now())
+        ChildSchedule.objects.create(child=self.child, weekday=now.weekday(), pickup_hour=now.time())
+
+        self.event_payload = {
+            "event": {"id": 1, "deviceId": 1, "type": "geofenceEnter", "eventTime": timezone.now().isoformat(), "positionId": 9, "geofenceId": 501},
+            "device": {"id": 1, "name": "tracker-1", "uniqueId": "IMEI-SMS"},
+            "geofence": {"id": 501, "name": "Test School"},
+        }
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://example.vercel.app"])
+    @patch("notifications.services.debug_sms")
+    def test_school_arrival_texts_a_real_link_not_the_placeholder(self, debug_sms):
+        response = self.client.post(
+            "/webhooks/arrival/", data=self.event_payload, content_type="application/json", headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        debug_sms.delay_on_commit.assert_called_once()
+        phone, message = debug_sms.delay_on_commit.call_args[0]
+        self.assertEqual(phone, "+13055550100")
+        self.assertNotIn("<link to live map>", message)
+        self.assertIn("https://example.vercel.app", message)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=[])
+    @patch("notifications.services.debug_sms")
+    def test_school_arrival_without_cors_origins_configured_sends_no_dangling_placeholder(self, debug_sms):
+        response = self.client.post(
+            "/webhooks/arrival/", data=self.event_payload, content_type="application/json", headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        _phone, message = debug_sms.delay_on_commit.call_args[0]
+        self.assertNotIn("<link to live map>", message)
+        self.assertNotIn("None", message)
+
+
+@in_memory_backends
 class PositionViewTest(TestCase):
     def setUp(self):
         self.secret = os.environ["TRACCAR_WEBHOOK_SECRET"]
@@ -181,6 +239,32 @@ class PositionViewTest(TestCase):
             headers={"X-Webhook-Secret": self.secret},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_course_is_stored_and_broadcast(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43, "course": 187.4},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(float(Position.objects.latest("device_time").course), 187.4)
+
+    def test_missing_course_stored_as_null_not_zero(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(Position.objects.latest("device_time").course)
 
     def test_unknown_van_rejected(self):
         response = self.client.post(

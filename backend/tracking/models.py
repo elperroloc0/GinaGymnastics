@@ -33,6 +33,11 @@ class Position(models.Model):
     van = models.ForeignKey(Van, on_delete=models.CASCADE, related_name="positions")
     latitude = models.DecimalField(max_digits=9, decimal_places=6)
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    # Course over ground in degrees (0-360, 0=north), as reported by the
+    # tracker's GPS chip - not computed from consecutive fixes here. Null
+    # when the device didn't report one (rare) rather than defaulting to 0,
+    # which would otherwise look like a real "facing north" reading.
+    course = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     device_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
 

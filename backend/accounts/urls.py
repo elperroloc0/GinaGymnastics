@@ -6,6 +6,8 @@ from . import views
 router = DefaultRouter()
 router.register("children", views.ChildViewSet, basename="child")
 router.register("schedules", views.ChildScheduleViewSet, basename="childschedule")
+router.register("operators", views.OperatorViewSet, basename="operator")
+router.register("parents", views.ParentViewSet, basename="parent")
 
 urlpatterns = router.urls + [
     path("enroll-parent/", views.EnrollParentView.as_view(), name="enroll-parent"),

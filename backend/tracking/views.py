@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from accounts.models import Child, User
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils import timezone
@@ -141,7 +142,18 @@ def arrival_webhook(request):
             # the scheduled pickup_hour.
             if abs(now - scheduled_dt) <= BUFFER:
                 child.active_ride = True
-                notify_parent(child, 'Van has arrived to the school. <link to live map>')
+                # Traccar calls this webhook server-to-server, not through a
+                # browser - request.build_absolute_uri() would resolve to this
+                # API's own domain, not the frontend's (they're separate
+                # origins now). CORS_ALLOWED_ORIGINS already holds the
+                # frontend's own URL for exactly this reason (see settings.py)
+                # - no need for a second env var carrying the same value.
+                # The frontend auto-shows the live map for an active ride on
+                # open, no child-specific path needed, so the bare base URL
+                # is enough.
+                frontend_url = settings.CORS_ALLOWED_ORIGINS[0] if settings.CORS_ALLOWED_ORIGINS else ""
+                link = f" Track live: {frontend_url}" if frontend_url else ""
+                notify_parent(child, f"Van has arrived to the school.{link}")
                 child.active_ride_start = now
                 child.save()
 
@@ -200,9 +212,10 @@ def traccar_position(request):
         return JsonResponse({"status": "unknown device"})
 
     device_time = _position_time(position)
+    course = position.get("course")
 
     Position.objects.create(
-        van=van, latitude=lat, longitude=lon, device_time=device_time
+        van=van, latitude=lat, longitude=lon, course=course, device_time=device_time
     )
 
     channel_layer = get_channel_layer()
@@ -217,6 +230,7 @@ def traccar_position(request):
             "van_id": van.id,
             "lat": float(lat),
             "lon": float(lon),
+            "course": float(course) if course is not None else None,
             "device_time": device_time.isoformat(),
         }
     )

@@ -260,7 +260,15 @@ class EnrollParentTest(TestCase):
         self.assertEqual(new_parent.children.first().schedule.count(), 3)
         self.assertEqual(ParentInvite.objects.filter(user=new_parent).count(), 1)
         debug_sms.delay_on_commit.assert_called_once()
-        self.assertEqual(debug_sms.delay_on_commit.call_args[0][0], "+13055550100")
+        phone, message = debug_sms.delay_on_commit.call_args[0]
+        self.assertEqual(phone, "+13055550100")
+        # Regression guard: request.build_absolute_uri() resolves to this
+        # API's own host (the Django test client's is "testserver") - but
+        # /set-password/:token is a frontend-only route Django never serves,
+        # so a link built that way 404s. Must come from CORS_ALLOWED_ORIGINS
+        # (the frontend's real origin) instead - see _set_password_link().
+        self.assertNotIn("testserver", message)
+        self.assertIn("/set-password/", message)
 
     def test_existing_phone_reuses_parent_and_does_not_text(self, debug_sms):
         self.parent.phone_number = "+13055550200"
@@ -392,3 +400,190 @@ class FlexibleLoginTest(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = _decode_jwt_payload(response.json()["access"])
         self.assertEqual(payload["user_id"], str(self.user.id))
+
+
+@locmem_cache
+class OperatorViewSetTest(TestCase):
+    """Operator-only account creation/listing for other operators - see
+    accounts/views.py's OperatorViewSet. Parent accounts are untouched, that's
+    still EnrollParentView's job.
+    """
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="op-admin", password="pw12345!", role=User.Roles.OPERATOR)
+        self.parent = User.objects.create_user(username="op-parent", password="pw12345!", role=User.Roles.PARENT)
+        self.superuser = User.objects.create_superuser(username="op-super", password="pw12345!")
+
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def _create_payload(self, **overrides):
+        payload = {"username": "new-op", "first_name": "New", "email": "new-op@example.com", "password": "pw12345!"}
+        payload.update(overrides)
+        return payload
+
+    def test_operator_can_create_operator(self):
+        response = self.client_operator.post("/api/operators/", self._create_payload(), content_type="application/json")
+        self.assertEqual(response.status_code, 201)
+        created = User.objects.get(username="new-op")
+        self.assertEqual(created.role, User.Roles.OPERATOR)
+        self.assertTrue(created.check_password("pw12345!"))
+        self.assertNotIn("password", response.json())
+
+    def test_operator_can_list_operators(self):
+        response = self.client_operator.get("/api/operators/")
+        usernames = [o["username"] for o in response.json()]
+        self.assertIn("op-admin", usernames)
+        self.assertNotIn("op-parent", usernames)
+        self.assertNotIn("op-super", usernames)
+
+    def test_operator_can_deactivate_operator(self):
+        target = User.objects.create_user(username="to-deactivate", password="pw12345!", role=User.Roles.OPERATOR)
+        response = self.client_operator.post(f"/api/operators/{target.id}/deactivate/")
+        self.assertEqual(response.status_code, 200)
+        target.refresh_from_db()
+        self.assertFalse(target.is_active)
+
+    def test_deactivated_operator_cannot_obtain_token(self):
+        target = User.objects.create_user(username="soon-inactive", password="pw12345!", role=User.Roles.OPERATOR)
+        self.client_operator.post(f"/api/operators/{target.id}/deactivate/")
+
+        response = self.client.post(
+            "/api/token/", {"username": "soon-inactive", "password": "pw12345!"}, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_parent_forbidden_on_list_create_and_deactivate(self):
+        list_response = self.client_parent.get("/api/operators/")
+        self.assertEqual(list_response.status_code, 403)
+
+        create_response = self.client_parent.post("/api/operators/", self._create_payload(), content_type="application/json")
+        self.assertEqual(create_response.status_code, 403)
+
+        deactivate_response = self.client_parent.post(f"/api/operators/{self.operator.id}/deactivate/")
+        self.assertEqual(deactivate_response.status_code, 403)
+
+
+@locmem_cache
+@patch("accounts.views.debug_sms")
+class ParentViewSetTest(TestCase):
+    """Operator-only view/edit/deactivate/resend-invite for parent accounts -
+    see accounts/views.py's ParentViewSet. Creation is still EnrollParentView's
+    job, untouched here.
+    """
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="parent-view-op", password="pw12345!", role=User.Roles.OPERATOR)
+        # Unusable password, same as a freshly-enrolled parent - EnrollParentView never calls set_password().
+        self.parent = User.objects.create_user(username="+13055551111", role=User.Roles.PARENT, phone_number="+13055551111", first_name="Carolina")
+
+        self.van = Van.objects.create(name="PV-VAN", tracker_imei="PV-IMEI")
+        school = GeoFence.objects.create(name="PV School", location_type=GeoFence.LocationTypes.SCHOOL, latitude=25.5, longitude=-80.5, radius=50, traccar_id=601)
+        gym = GeoFence.objects.create(name="PV Gym", location_type=GeoFence.LocationTypes.GINAS_GYM, latitude=25.6, longitude=-80.6, radius=50, traccar_id=602)
+        self.route = Route.objects.create(van=self.van, origin=school, destination=gym)
+        self.child = Child.objects.create(name="Maya", parent=self.parent, route=self.route)
+
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def test_operator_can_list_parents_with_nested_children(self, debug_sms):
+        response = self.client_operator.get("/api/parents/")
+        by_username = {p["username"]: p for p in response.json()}
+        self.assertIn("+13055551111", by_username)
+        self.assertNotIn("parent-view-op", by_username)
+        self.assertEqual([c["name"] for c in by_username["+13055551111"]["children"]], ["Maya"])
+
+    def test_password_never_serialized(self, debug_sms):
+        response = self.client_operator.get("/api/parents/")
+        self.assertNotIn("password", response.json()[0])
+
+    def test_is_registered_reflects_usable_password(self, debug_sms):
+        response = self.client_operator.get("/api/parents/")
+        self.assertFalse(response.json()[0]["is_registered"])
+
+        self.parent.set_password("pw12345!")
+        self.parent.save()
+        response = self.client_operator.get("/api/parents/")
+        self.assertTrue(response.json()[0]["is_registered"])
+
+    def test_editing_phone_number_updates_username_to_match(self, debug_sms):
+        response = self.client_operator.patch(
+            f"/api/parents/{self.parent.id}/", {"phone_number": "+13055559999"}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertEqual(str(self.parent.phone_number), "+13055559999")
+        self.assertEqual(self.parent.username, "+13055559999")
+
+    def test_editing_name_only_leaves_username_alone(self, debug_sms):
+        response = self.client_operator.patch(
+            f"/api/parents/{self.parent.id}/", {"first_name": "Caro"}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertEqual(self.parent.username, "+13055551111")
+        self.assertEqual(self.parent.first_name, "Caro")
+
+    def test_editing_phone_to_a_number_already_in_use_is_rejected(self, debug_sms):
+        User.objects.create_user(username="+13055552222", role=User.Roles.PARENT, phone_number="+13055552222")
+        response = self.client_operator.patch(
+            f"/api/parents/{self.parent.id}/", {"phone_number": "+13055552222"}, content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.parent.refresh_from_db()
+        self.assertEqual(self.parent.username, "+13055551111")
+
+    def test_operator_can_deactivate_parent(self, debug_sms):
+        response = self.client_operator.post(f"/api/parents/{self.parent.id}/deactivate/")
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertFalse(self.parent.is_active)
+
+    def test_deactivated_parent_cannot_obtain_token(self, debug_sms):
+        self.parent.set_password("pw12345!")
+        self.parent.save()
+        self.client_operator.post(f"/api/parents/{self.parent.id}/deactivate/")
+
+        response = self.client.post(
+            "/api/token/", {"username": "+13055551111", "password": "pw12345!"}, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_resend_invite_creates_new_invite_and_texts_a_regain_access_message(self, debug_sms):
+        response = self.client_operator.post(f"/api/parents/{self.parent.id}/resend_invite/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 1)
+        debug_sms.delay_on_commit.assert_called_once()
+        phone, message = debug_sms.delay_on_commit.call_args[0]
+        self.assertEqual(phone, "+13055551111")
+        self.assertNotIn("is enrolled for van rides", message)  # the EnrollParentView text, not this one
+        self.assertNotIn("testserver", message)  # see _set_password_link()'s regression note
+        self.assertIn("/set-password/", message)
+
+    def test_resend_invite_without_a_phone_number_is_rejected_not_sent_blank(self, debug_sms):
+        # A handful of real rows predate EnrollParentView (which always
+        # requires a phone) and have none - Twilio can't text an empty "to".
+        phoneless = User.objects.create_user(username="no-phone-parent", role=User.Roles.PARENT)
+        response = self.client_operator.post(f"/api/parents/{phoneless.id}/resend_invite/")
+        self.assertEqual(response.status_code, 400)
+        debug_sms.delay_on_commit.assert_not_called()
+        self.assertEqual(ParentInvite.objects.filter(user=phoneless).count(), 0)
+
+    def test_parent_forbidden_on_all_endpoints(self, debug_sms):
+        self.assertEqual(self.client_parent.get("/api/parents/").status_code, 403)
+        self.assertEqual(
+            self.client_parent.patch(f"/api/parents/{self.parent.id}/", {"first_name": "x"}, content_type="application/json").status_code,
+            403,
+        )
+        self.assertEqual(self.client_parent.post(f"/api/parents/{self.parent.id}/deactivate/").status_code, 403)
+        self.assertEqual(self.client_parent.post(f"/api/parents/{self.parent.id}/resend_invite/").status_code, 403)
+
+    def test_child_serializer_exposes_parent_name_and_phone(self, debug_sms):
+        response = self.client_operator.get(f"/api/children/{self.child.id}/")
+        body = response.json()
+        self.assertEqual(body["parent_name"], "Carolina")
+        self.assertEqual(body["parent_phone_number"], "+13055551111")
