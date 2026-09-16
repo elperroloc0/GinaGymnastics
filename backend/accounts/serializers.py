@@ -47,6 +47,7 @@ class EnrollParentSerializer(serializers.Serializer):
 
     parent_phone = PhoneNumberField()
     parent_name = serializers.CharField(required=False, allow_blank=True, default='')
+    email = serializers.EmailField(required=False, allow_blank=True, default='')
     child_name = serializers.CharField(max_length=150)
     route = serializers.PrimaryKeyRelatedField(queryset=Route.objects.all())
     weekdays = serializers.ListField(

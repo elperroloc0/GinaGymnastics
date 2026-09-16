@@ -153,6 +153,7 @@ class EnrollParentView(APIView):
                     role=User.Roles.PARENT,
                     phone_number=phone,
                     first_name=data["parent_name"],
+                    email=data["email"],
                 )
                 # No password yet - set_password() only ever runs from
                 # SetPasswordView, once the parent follows their invite link.
