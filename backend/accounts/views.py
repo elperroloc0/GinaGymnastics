@@ -3,6 +3,7 @@ from django.conf import settings
 from django.db import transaction
 from django.shortcuts import render
 from django.utils import timezone
+from django.utils.text import slugify
 from notifications.tasks import debug_sms
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
@@ -16,6 +17,7 @@ from .serializers import (
     ChildScheduleSerializer,
     ChildSerializer,
     EnrollParentSerializer,
+    InviteInfoSerializer,
     OperatorSerializer,
     ParentSerializer,
     RoleTokenObtainPairSerializer,
@@ -34,6 +36,35 @@ def _set_password_link(token) -> str:
     env var - same reasoning as tracking/views.py's arrival_webhook link."""
     frontend_url = settings.CORS_ALLOWED_ORIGINS[0] if settings.CORS_ALLOWED_ORIGINS else ""
     return f"{frontend_url}/set-password/{token}"
+
+
+def _get_valid_invite(token: str) -> ParentInvite | None:
+    """Looks up a ParentInvite by token and returns it only if still valid
+    (unused, within TTL). Shared by InviteInfoView and SetPasswordView so
+    both agree on what "valid" means and return the same generic error."""
+    try:
+        invite = ParentInvite.objects.select_related("user").get(token=token)
+    except ParentInvite.DoesNotExist:
+        return None
+    return invite if invite.is_valid() else None
+
+
+def _generate_parent_username(first_name: str) -> str:
+    """Base username slugified from the parent's name, deduplicated with a
+    numeric suffix on collision. Generated once at creation and never
+    resynced afterward - phone_number (not this) is the actual login
+    credential a parent types in, matched directly by FlexibleLoginBackend
+    regardless of what username holds. This exists so Django admin's user
+    list shows a name-shaped handle instead of a phone number sitting in a
+    field literally called "username"."""
+    base = slugify(first_name) or "parent"
+    username = base
+    suffix = 1
+    while User.objects.filter(username=username).exists():
+        suffix += 1
+        username = f"{base}{suffix}"
+    return username
+
 
 class ChildViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
@@ -149,7 +180,7 @@ class EnrollParentView(APIView):
         with transaction.atomic():
             if parent is None:
                 parent = User(
-                    username=phone,
+                    username=_generate_parent_username(data["parent_name"]),
                     role=User.Roles.PARENT,
                     phone_number=phone,
                     first_name=data["parent_name"],
@@ -181,6 +212,25 @@ class EnrollParentView(APIView):
         return Response({"child": ChildSerializer(child).data, "invited": invited}, status=status.HTTP_201_CREATED)
 
 
+class InviteInfoView(APIView):
+    """Public, token-gated: GET counterpart to SetPasswordView, used by the
+    set-password page to show whose account it's activating - name and the
+    phone number they'll need to remember as their login - before they type
+    anything. Same validity rule as SetPasswordView (_get_valid_invite),
+    so a link that's expired or already used shows the same error either
+    way instead of leaking "this token exists but is spent"."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "set_password"
+
+    def get(self, request, token):
+        invite = _get_valid_invite(token)
+        if invite is None:
+            return Response({"detail": "Invalid or expired link."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(InviteInfoSerializer(invite.user).data)
+
+
 class SetPasswordView(APIView):
     """Public, token-gated: where a ParentInvite link lands. Not behind auth -
     the token itself is the credential, single-use and time-limited
@@ -195,12 +245,8 @@ class SetPasswordView(APIView):
         serializer = SetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        try:
-            invite = ParentInvite.objects.select_related("user").get(token=serializer.validated_data["token"])
-        except ParentInvite.DoesNotExist:
-            return Response({"detail": "Invalid or expired link."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not invite.is_valid():
+        invite = _get_valid_invite(serializer.validated_data["token"])
+        if invite is None:
             return Response({"detail": "Invalid or expired link."}, status=status.HTTP_400_BAD_REQUEST)
 
         user = invite.user

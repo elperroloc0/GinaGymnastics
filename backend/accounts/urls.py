@@ -12,5 +12,6 @@ router.register("parents", views.ParentViewSet, basename="parent")
 urlpatterns = router.urls + [
     path("enroll-parent/", views.EnrollParentView.as_view(), name="enroll-parent"),
     path("set-password/", views.SetPasswordView.as_view(), name="set-password"),
+    path("set-password/<str:token>/", views.InviteInfoView.as_view(), name="set-password-invite-info"),
 ]
 

@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from fleet.models import GeoFence, Route, Van
 from rest_framework.test import APIClient
 
@@ -270,6 +271,27 @@ class EnrollParentTest(TestCase):
         self.assertNotIn("testserver", message)
         self.assertIn("/set-password/", message)
 
+    def test_username_is_slugified_from_name_not_phone(self, debug_sms):
+        self.client_operator.post("/api/enroll-parent/", self._payload(), content_type="application/json")
+        new_parent = User.objects.get(phone_number="+13055550100")
+        self.assertEqual(new_parent.username, "carolina-alvarez")
+
+    def test_username_collision_gets_a_numeric_suffix(self, debug_sms):
+        # Same parent_name ("Carolina Alvarez"), two different families/phones.
+        self.client_operator.post("/api/enroll-parent/", self._payload(phone="+13055550101"), content_type="application/json")
+        self.client_operator.post("/api/enroll-parent/", self._payload(phone="+13055550102"), content_type="application/json")
+        first = User.objects.get(phone_number="+13055550101")
+        second = User.objects.get(phone_number="+13055550102")
+        self.assertEqual(first.username, "carolina-alvarez")
+        self.assertEqual(second.username, "carolina-alvarez2")
+
+    def test_blank_parent_name_still_gets_a_generated_username(self, debug_sms):
+        payload = self._payload(phone="+13055550103")
+        payload["parent_name"] = ""
+        self.client_operator.post("/api/enroll-parent/", payload, content_type="application/json")
+        new_parent = User.objects.get(phone_number="+13055550103")
+        self.assertTrue(new_parent.username.startswith("parent"))
+
     def test_existing_phone_reuses_parent_and_does_not_text(self, debug_sms):
         self.parent.phone_number = "+13055550200"
         self.parent.save()
@@ -346,6 +368,40 @@ class SetPasswordTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.parent.refresh_from_db()
         self.assertFalse(self.parent.has_usable_password())
+
+
+@locmem_cache
+class InviteInfoTest(TestCase):
+    """GET /api/set-password/<token>/ - read-only counterpart to
+    SetPasswordTest above, lets the page show whose account it's
+    activating (name + phone-as-login) before any password is typed."""
+
+    def setUp(self):
+        cache.clear()
+        self.parent = User.objects.create_user(
+            username="+13055550301",
+            role=User.Roles.PARENT,
+            first_name="Carolina Alvarez",
+            phone_number="+13055550301",
+        )
+        self.invite = ParentInvite.objects.create(user=self.parent)
+
+    def test_valid_token_returns_name_and_phone(self):
+        response = self.client.get(f"/api/set-password/{self.invite.token}/")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["first_name"], "Carolina Alvarez")
+        self.assertEqual(body["phone_number"], "+13055550301")
+
+    def test_unknown_token_rejected(self):
+        response = self.client.get("/api/set-password/not-a-real-token/")
+        self.assertEqual(response.status_code, 400)
+
+    def test_used_token_rejected(self):
+        self.invite.used_at = timezone.now()
+        self.invite.save(update_fields=["used_at"])
+        response = self.client.get(f"/api/set-password/{self.invite.token}/")
+        self.assertEqual(response.status_code, 400)
 
 
 @locmem_cache
@@ -510,14 +566,17 @@ class ParentViewSetTest(TestCase):
         response = self.client_operator.get("/api/parents/")
         self.assertTrue(response.json()[0]["is_registered"])
 
-    def test_editing_phone_number_updates_username_to_match(self, debug_sms):
+    def test_editing_phone_number_does_not_change_username(self, debug_sms):
+        # username is a name-derived internal handle now (_generate_parent_username),
+        # not a mirror of phone_number - editing the phone (the actual login
+        # credential, matched directly by FlexibleLoginBackend) must not rename it.
         response = self.client_operator.patch(
             f"/api/parents/{self.parent.id}/", {"phone_number": "+13055559999"}, content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.parent.refresh_from_db()
         self.assertEqual(str(self.parent.phone_number), "+13055559999")
-        self.assertEqual(self.parent.username, "+13055559999")
+        self.assertEqual(self.parent.username, "+13055551111")
 
     def test_editing_name_only_leaves_username_alone(self, debug_sms):
         response = self.client_operator.patch(

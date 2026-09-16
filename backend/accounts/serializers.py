@@ -80,10 +80,13 @@ class OperatorSerializer(serializers.ModelSerializer):
 
 class ParentSerializer(serializers.ModelSerializer):
     """Operator-only view/edit of a parent account. Supports PATCH, unlike
-    OperatorSerializer - phone_number/username stay in lockstep (see update()),
-    mirroring the invariant EnrollParentView sets at creation. No password
-    field anywhere: a parent's password is never operator-writable or
-    -readable, only self-service via SetPasswordView/ParentInvite."""
+    OperatorSerializer. `username` is a name-derived internal handle
+    (accounts/views.py's _generate_parent_username), generated once at
+    creation and never touched again here - phone_number is the actual
+    login credential (FlexibleLoginBackend matches it directly), so editing
+    it does not rename the account. No password field anywhere: a parent's
+    password is never operator-writable or -readable, only self-service via
+    SetPasswordView/ParentInvite."""
 
     children = ChildSerializer(many=True, read_only=True)
     is_registered = serializers.SerializerMethodField()
@@ -100,14 +103,19 @@ class ParentSerializer(serializers.ModelSerializer):
         return obj.has_usable_password()
 
     def validate_phone_number(self, value):
-        if User.objects.exclude(pk=self.instance.pk).filter(username=str(value)).exists():
+        if User.objects.exclude(pk=self.instance.pk).filter(phone_number=value).exists():
             raise serializers.ValidationError("Another account already uses this phone number.")
         return value
 
-    def update(self, instance, validated_data):
-        if "phone_number" in validated_data:
-            validated_data["username"] = str(validated_data["phone_number"])
-        return super().update(instance, validated_data)
+
+class InviteInfoSerializer(serializers.ModelSerializer):
+    """Output for InviteInfoView - what the set-password page shows before
+    the parent submits anything, so they can confirm whose account it is
+    and see the phone number they'll need to remember as their login."""
+
+    class Meta:
+        model = User
+        fields = ["first_name", "phone_number"]
 
 
 class SetPasswordSerializer(serializers.Serializer):
