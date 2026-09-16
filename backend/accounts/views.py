@@ -14,10 +14,12 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import Child, ChildSchedule, ParentInvite, User
 from .serializers import (
+    ChangePasswordSerializer,
     ChildScheduleSerializer,
     ChildSerializer,
     EnrollParentSerializer,
     InviteInfoSerializer,
+    MeSerializer,
     OperatorSerializer,
     ParentSerializer,
     RoleTokenObtainPairSerializer,
@@ -257,3 +259,40 @@ class SetPasswordView(APIView):
 
         token = RoleTokenObtainPairSerializer.get_token(user)
         return Response({"access": str(token.access_token), "refresh": str(token)})
+
+
+class MeView(APIView):
+    """Self-service profile for whoever is signed in - GET to read it, PATCH
+    to edit the narrow slice MeSerializer allows (currently just email).
+    Not role-restricted, though a parent's own account screen is the only
+    place this is used today - see ParentAccount, a later step."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(MeSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = MeSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class ChangePasswordView(APIView):
+    """Self-service password change for a signed-in user who still knows
+    their current password - SetPasswordView (a ParentInvite token) is the
+    path for someone who doesn't."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if not request.user.check_password(serializer.validated_data["current_password"]):
+            return Response({"detail": "Current password is incorrect."}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.set_password(serializer.validated_data["new_password"])
+        request.user.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)

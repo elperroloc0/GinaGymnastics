@@ -646,3 +646,99 @@ class ParentViewSetTest(TestCase):
         body = response.json()
         self.assertEqual(body["parent_name"], "Carolina")
         self.assertEqual(body["parent_phone_number"], "+13055551111")
+
+
+class MeViewTest(TestCase):
+    """GET/PATCH /api/me/ - self-service profile for whoever is signed in.
+    Deliberately narrow: only email is writable here (see MeSerializer);
+    phone_number/first_name/role stay operator-only (ParentViewSet)."""
+
+    def setUp(self):
+        self.parent = User.objects.create_user(
+            username="me-view-parent",
+            password="pw12345!",
+            role=User.Roles.PARENT,
+            phone_number="+13055553333",
+            first_name="Diego",
+        )
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def test_get_returns_own_profile(self):
+        response = self.client_parent.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["first_name"], "Diego")
+        self.assertEqual(body["phone_number"], "+13055553333")
+        self.assertEqual(body["role"], "PARENT")
+
+    def test_patch_updates_email(self):
+        response = self.client_parent.patch("/api/me/", {"email": "diego@example.com"}, content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertEqual(self.parent.email, "diego@example.com")
+
+    def test_patch_cannot_change_phone_number_or_first_name(self):
+        response = self.client_parent.patch(
+            "/api/me/",
+            {"phone_number": "+13055559999", "first_name": "Someone Else"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertEqual(str(self.parent.phone_number), "+13055553333")
+        self.assertEqual(self.parent.first_name, "Diego")
+
+    def test_unauthenticated_request_rejected(self):
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 401)
+
+
+class ChangePasswordTest(TestCase):
+    """POST /api/change-password/ - self-service password change for a
+    signed-in user who still knows their current password."""
+
+    def setUp(self):
+        self.parent = User.objects.create_user(
+            username="change-pw-parent", password="the-current-password", role=User.Roles.PARENT
+        )
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def test_correct_current_password_sets_the_new_one(self):
+        response = self.client_parent.post(
+            "/api/change-password/",
+            {"current_password": "the-current-password", "new_password": "a-strong-new-passphrase-1"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 204)
+        self.parent.refresh_from_db()
+        self.assertTrue(self.parent.check_password("a-strong-new-passphrase-1"))
+
+    def test_wrong_current_password_rejected(self):
+        response = self.client_parent.post(
+            "/api/change-password/",
+            {"current_password": "not-the-real-one", "new_password": "a-strong-new-passphrase-1"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.parent.refresh_from_db()
+        self.assertTrue(self.parent.check_password("the-current-password"))
+
+    def test_weak_new_password_rejected(self):
+        response = self.client_parent.post(
+            "/api/change-password/",
+            {"current_password": "the-current-password", "new_password": "1234"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.parent.refresh_from_db()
+        self.assertTrue(self.parent.check_password("the-current-password"))
+
+    def test_unauthenticated_request_rejected(self):
+        response = self.client.post(
+            "/api/change-password/",
+            {"current_password": "the-current-password", "new_password": "a-strong-new-passphrase-1"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)

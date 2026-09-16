@@ -129,3 +129,28 @@ class SetPasswordSerializer(serializers.Serializer):
     def validate_password(self, value):
         validate_password(value)
         return value
+
+
+class MeSerializer(serializers.ModelSerializer):
+    """Self-service: what GET /api/me/ returns and PATCH accepts, for
+    whoever is signed in (parent or operator). Deliberately narrow -
+    phone_number/username stay operator-only (ParentViewSet/OperatorViewSet):
+    a signed-in user can't rename their own login here, only their email."""
+
+    class Meta:
+        model = User
+        fields = ["first_name", "email", "phone_number", "role"]
+        read_only_fields = ["first_name", "phone_number", "role"]
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """Input for ChangePasswordView - a signed-in user changing their own
+    password. Requires the current one, unlike SetPasswordView (which
+    trusts a ParentInvite token instead, for someone who has none yet)."""
+
+    current_password = serializers.CharField()
+    new_password = serializers.CharField()
+
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value

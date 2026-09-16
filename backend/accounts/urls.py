@@ -13,5 +13,7 @@ urlpatterns = router.urls + [
     path("enroll-parent/", views.EnrollParentView.as_view(), name="enroll-parent"),
     path("set-password/", views.SetPasswordView.as_view(), name="set-password"),
     path("set-password/<str:token>/", views.InviteInfoView.as_view(), name="set-password-invite-info"),
+    path("me/", views.MeView.as_view(), name="me"),
+    path("change-password/", views.ChangePasswordView.as_view(), name="change-password"),
 ]
 
