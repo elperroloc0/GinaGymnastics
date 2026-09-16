@@ -18,6 +18,7 @@ from .serializers import (
     ChildScheduleSerializer,
     ChildSerializer,
     EnrollParentSerializer,
+    ForgotPasswordSerializer,
     InviteInfoSerializer,
     MeSerializer,
     OperatorSerializer,
@@ -259,6 +260,37 @@ class SetPasswordView(APIView):
 
         token = RoleTokenObtainPairSerializer.get_token(user)
         return Response({"access": str(token.access_token), "refresh": str(token)})
+
+
+class ForgotPasswordView(APIView):
+    """Public, self-service password reset for a parent who forgot theirs
+    and doesn't want to call the gym. Same underlying mechanism as
+    ParentViewSet.resend_invite (a fresh ParentInvite, texted) - just
+    reachable without being signed in or needing an operator.
+
+    The response is identical whether or not the phone number actually
+    matches an account: a public endpoint that answered differently for
+    "this number has an account with a child" vs. "it doesn't" would let
+    anyone probe which phone numbers are enrolled here."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "forgot_password"
+
+    GENERIC_RESPONSE = {"detail": "If an account exists for that number, we've texted a reset link."}
+
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = str(serializer.validated_data["phone_number"])
+
+        parent = User.objects.filter(phone_number=phone, role=User.Roles.PARENT).first()
+        if parent is not None:
+            invite = ParentInvite.objects.create(user=parent)
+            link = _set_password_link(invite.token)
+            debug_sms.delay_on_commit(phone, f"Gina's Gymnastics: reset your Ride Tracker access here: {link}")
+
+        return Response(self.GENERIC_RESPONSE)
 
 
 class MeView(APIView):

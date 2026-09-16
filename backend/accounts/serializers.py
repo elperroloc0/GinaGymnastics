@@ -131,6 +131,13 @@ class SetPasswordSerializer(serializers.Serializer):
         return value
 
 
+class ForgotPasswordSerializer(serializers.Serializer):
+    """Input for ForgotPasswordView - just the phone number, the one
+    identifier every parent is guaranteed to have (email is optional)."""
+
+    phone_number = PhoneNumberField()
+
+
 class MeSerializer(serializers.ModelSerializer):
     """Self-service: what GET /api/me/ returns and PATCH accepts, for
     whoever is signed in (parent or operator). Deliberately narrow -

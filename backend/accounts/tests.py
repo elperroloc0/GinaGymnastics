@@ -742,3 +742,50 @@ class ChangePasswordTest(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 401)
+
+
+@locmem_cache
+@patch("accounts.views.debug_sms")
+class ForgotPasswordTest(TestCase):
+    """POST /api/forgot-password/ - public, self-service password reset by
+    phone number, no operator involved. See ForgotPasswordView's docstring
+    for why the response never reveals whether the number has an account."""
+
+    def setUp(self):
+        cache.clear()
+        self.parent = User.objects.create_user(
+            username="forgot-pw-parent", role=User.Roles.PARENT, phone_number="+13055554444"
+        )
+
+    def test_known_phone_creates_invite_and_texts_a_link(self, debug_sms):
+        response = self.client.post(
+            "/api/forgot-password/", {"phone_number": "+13055554444"}, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 1)
+        debug_sms.delay_on_commit.assert_called_once()
+        phone, message = debug_sms.delay_on_commit.call_args[0]
+        self.assertEqual(phone, "+13055554444")
+        self.assertNotIn("testserver", message)  # see _set_password_link()'s regression note
+        self.assertIn("/set-password/", message)
+
+    def test_unknown_phone_gets_the_same_generic_response(self, debug_sms):
+        known_response = self.client.post(
+            "/api/forgot-password/", {"phone_number": "+13055554444"}, content_type="application/json"
+        )
+        unknown_response = self.client.post(
+            "/api/forgot-password/", {"phone_number": "+13055559999"}, content_type="application/json"
+        )
+        self.assertEqual(known_response.status_code, unknown_response.status_code)
+        self.assertEqual(known_response.json(), unknown_response.json())
+        self.assertEqual(ParentInvite.objects.filter(user__phone_number="+13055559999").count(), 0)
+
+    def test_endpoint_is_throttled(self, debug_sms):
+        rate = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["forgot_password"]
+        limit = int(rate.split("/")[0])
+        responses = [
+            self.client.post("/api/forgot-password/", {"phone_number": "+13055554444"}, content_type="application/json")
+            for _ in range(limit + 1)
+        ]
+        self.assertTrue(all(r.status_code == 200 for r in responses[:limit]))
+        self.assertEqual(responses[limit].status_code, 429)

@@ -152,6 +152,11 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/min',
         'set_password': '10/min',
+        # Public and unauthenticated (any phone number, no account needed) -
+        # tighter than the others since each hit can cost a real SMS and the
+        # endpoint deliberately can't tell a caller whether the number even
+        # has an account (see ForgotPasswordView).
+        'forgot_password': '5/hour',
     },
 }
 
