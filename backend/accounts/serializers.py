@@ -151,11 +151,13 @@ class MeSerializer(serializers.ModelSerializer):
     """Self-service: what GET /api/me/ returns and PATCH accepts, for
     whoever is signed in (parent or operator). Deliberately narrow -
     phone_number/username stay operator-only (ParentViewSet/OperatorViewSet):
-    a signed-in user can't rename their own login here, only their email."""
+    a signed-in user can't rename their own login here, only their email
+    and notify_channel (which SMS/EMAIL notifications.services.notify_parent
+    uses - see accounts.models.User.NotifyChannel)."""
 
     class Meta:
         model = User
-        fields = ["first_name", "email", "phone_number", "role"]
+        fields = ["first_name", "email", "phone_number", "role", "notify_channel"]
         read_only_fields = ["first_name", "phone_number", "role"]
 
 

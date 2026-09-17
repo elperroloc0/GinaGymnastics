@@ -172,6 +172,22 @@ CELERY_BROKER_URL = f"{REDIS_BASE_URL}/0"
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
 
+# Email (arrival notifications' alternative to SMS - see
+# notifications.services.notify_parent). Gmail SMTP + an app password, the
+# same minimal approach as Twilio above: no third-party ESP library, direct
+# from os.environ, nothing hardcoded. Swapping providers later only means
+# changing this block (or dropping in django-anymail) - every send goes
+# through EmailMultiAlternatives/DEFAULT_FROM_EMAIL, not provider-specific code.
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.environ.get("EMAIL_HOST_USER", "")
+
+
 ROOT_URLCONF = 'backend.urls'
 
 TEMPLATES = [

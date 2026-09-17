@@ -651,8 +651,9 @@ class ParentViewSetTest(TestCase):
 
 class MeViewTest(TestCase):
     """GET/PATCH /api/me/ - self-service profile for whoever is signed in.
-    Deliberately narrow: only email is writable here (see MeSerializer);
-    phone_number/first_name/role stay operator-only (ParentViewSet)."""
+    Deliberately narrow: only email and notify_channel are writable here
+    (see MeSerializer); phone_number/first_name/role stay operator-only
+    (ParentViewSet)."""
 
     def setUp(self):
         self.parent = User.objects.create_user(
@@ -672,12 +673,21 @@ class MeViewTest(TestCase):
         self.assertEqual(body["first_name"], "Diego")
         self.assertEqual(body["phone_number"], "+13055553333")
         self.assertEqual(body["role"], "PARENT")
+        self.assertEqual(body["notify_channel"], "SMS")  # the model default
 
     def test_patch_updates_email(self):
         response = self.client_parent.patch("/api/me/", {"email": "diego@example.com"}, content_type="application/json")
         self.assertEqual(response.status_code, 200)
         self.parent.refresh_from_db()
         self.assertEqual(self.parent.email, "diego@example.com")
+
+    def test_patch_updates_notify_channel(self):
+        response = self.client_parent.patch(
+            "/api/me/", {"notify_channel": "EMAIL"}, content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.parent.refresh_from_db()
+        self.assertEqual(self.parent.notify_channel, User.NotifyChannel.EMAIL)
 
     def test_patch_cannot_change_phone_number_or_first_name(self):
         response = self.client_parent.patch(

@@ -14,6 +14,10 @@ class User(AbstractUser):
         PARENT = 'PARENT', 'Parent'
         OPERATOR = 'OPERATOR', 'Operator'
 
+    class NotifyChannel(models.TextChoices):
+        SMS = 'SMS', 'Text message'
+        EMAIL = 'EMAIL', 'Email'
+
     role = models.CharField(
         max_length=20,
         choices=Roles.choices,
@@ -21,6 +25,15 @@ class User(AbstractUser):
     )
     # an optional phone number for parents notifications
     phone_number = PhoneNumberField(blank=True)
+    # Which channel notifications.services.notify_parent() uses for arrival
+    # texts/emails - SMS by default so every existing account keeps its
+    # current behavior. Falls back to SMS at send time if EMAIL is chosen
+    # but no email is on file (see notify_parent()).
+    notify_channel = models.CharField(
+        max_length=10,
+        choices=NotifyChannel.choices,
+        default=NotifyChannel.SMS,
+    )
 
 
 class Child(models.Model):
