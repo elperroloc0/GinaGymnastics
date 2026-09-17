@@ -14,6 +14,7 @@ urlpatterns = router.urls + [
     path("set-password/", views.SetPasswordView.as_view(), name="set-password"),
     path("set-password/<str:token>/", views.InviteInfoView.as_view(), name="set-password-invite-info"),
     path("forgot-password/", views.ForgotPasswordView.as_view(), name="forgot-password"),
+    path("forgot-password/verify/", views.VerifyResetCodeView.as_view(), name="forgot-password-verify"),
     path("me/", views.MeView.as_view(), name="me"),
     path("change-password/", views.ChangePasswordView.as_view(), name="change-password"),
 ]

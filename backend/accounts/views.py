@@ -1,5 +1,9 @@
+import hmac
+import secrets
+
 from accounts.permission import IsOperator, IsOperatorOrReadOnly
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.shortcuts import render
 from django.utils import timezone
@@ -25,6 +29,7 @@ from .serializers import (
     ParentSerializer,
     RoleTokenObtainPairSerializer,
     SetPasswordSerializer,
+    VerifyResetCodeSerializer,
 )
 
 # Create your views here.
@@ -262,22 +267,51 @@ class SetPasswordView(APIView):
         return Response({"access": str(token.access_token), "refresh": str(token)})
 
 
+# --- Self-service password reset: phone -> texted code -> ParentInvite ---
+#
+# Two-step by design, not one. A bare phone number is not proof of anything
+# (anyone can type in anyone else's number) - RESET_CODE_TTL_SECONDS below is
+# how long a code stays valid for VerifyResetCodeView to actually prove the
+# caller has the phone, *before* a ParentInvite token is ever minted. Once
+# verified, the rest of the flow (InviteInfoView, SetPasswordView) is the
+# exact same one an operator-sent invite link lands on - this only changes
+# how the invite gets created, not what it is once it exists.
+RESET_CODE_TTL_SECONDS = 600  # 10 minutes
+RESET_CODE_MAX_VERIFY_ATTEMPTS = 5
+RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR = 5
+
+
+def _reset_code_key(phone: str) -> str:
+    return f"password_reset_code:{phone}"
+
+
+def _reset_code_attempts_key(phone: str) -> str:
+    return f"password_reset_attempts:{phone}"
+
+
+def _reset_code_send_count_key(phone: str) -> str:
+    return f"password_reset_sends:{phone}"
+
+
 class ForgotPasswordView(APIView):
     """Public, self-service password reset for a parent who forgot theirs
-    and doesn't want to call the gym. Same underlying mechanism as
-    ParentViewSet.resend_invite (a fresh ParentInvite, texted) - just
-    reachable without being signed in or needing an operator.
+    and doesn't want to call the gym - step 1 of 2, texts a short code
+    rather than a link (see VerifyResetCodeView for step 2 and why).
 
     The response is identical whether or not the phone number actually
     matches an account: a public endpoint that answered differently for
     "this number has an account with a child" vs. "it doesn't" would let
-    anyone probe which phone numbers are enrolled here."""
+    anyone probe which phone numbers are enrolled here. Same reasoning is
+    why a phone number that's already had RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR
+    codes sent this hour gets this same response too, silently - without
+    that cap, ScopedRateThrottle alone (keyed by IP) doesn't stop someone
+    with access to several IPs from repeatedly texting a stranger's phone."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "forgot_password"
 
-    GENERIC_RESPONSE = {"detail": "If an account exists for that number, we've texted a reset link."}
+    GENERIC_RESPONSE = {"detail": "If an account exists for that number, we've texted a reset code."}
 
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
@@ -286,11 +320,66 @@ class ForgotPasswordView(APIView):
 
         parent = User.objects.filter(phone_number=phone, role=User.Roles.PARENT).first()
         if parent is not None:
-            invite = ParentInvite.objects.create(user=parent)
-            link = _set_password_link(invite.token)
-            debug_sms.delay_on_commit(phone, f"Gina's Gymnastics: reset your Ride Tracker access here: {link}")
+            send_count = cache.get(_reset_code_send_count_key(phone), 0)
+            if send_count < RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR:
+                code = f"{secrets.randbelow(1_000_000):06d}"
+                cache.set(_reset_code_key(phone), code, timeout=RESET_CODE_TTL_SECONDS)
+                # A fresh code means a fresh attempt budget against it.
+                cache.delete(_reset_code_attempts_key(phone))
+                cache.set(_reset_code_send_count_key(phone), send_count + 1, timeout=3600)
+                debug_sms.delay_on_commit(
+                    phone, f"Gina's Gymnastics: your Ride Tracker reset code is {code}. It expires in 10 minutes."
+                )
 
         return Response(self.GENERIC_RESPONSE)
+
+
+class VerifyResetCodeView(APIView):
+    """Step 2: exchanges the code ForgotPasswordView just texted for a
+    normal ParentInvite token, handing off into the exact same
+    InviteInfoView/SetPasswordView flow an operator-sent invite link lands
+    on. This view's only job is proving the caller actually received that
+    code - constant-time compare (hmac.compare_digest) so response timing
+    can't leak how much of a guess was right, single-use (deleted on a
+    correct guess), and a hard cap on wrong guesses (RESET_CODE_MAX_VERIFY_ATTEMPTS)
+    so the code's 1-in-a-million space can't just be brute-forced within
+    its 10-minute window."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "verify_reset_code"
+
+    INVALID_RESPONSE = {"detail": "Incorrect or expired code."}
+    TOO_MANY_ATTEMPTS_RESPONSE = {"detail": "Too many attempts. Request a new code."}
+
+    def post(self, request):
+        serializer = VerifyResetCodeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = str(serializer.validated_data["phone_number"])
+        submitted_code = serializer.validated_data["code"]
+
+        attempts = cache.get(_reset_code_attempts_key(phone), 0)
+        if attempts >= RESET_CODE_MAX_VERIFY_ATTEMPTS:
+            return Response(self.TOO_MANY_ATTEMPTS_RESPONSE, status=status.HTTP_400_BAD_REQUEST)
+
+        stored_code = cache.get(_reset_code_key(phone))
+        if stored_code is None or not hmac.compare_digest(stored_code, submitted_code):
+            cache.set(_reset_code_attempts_key(phone), attempts + 1, timeout=RESET_CODE_TTL_SECONDS)
+            return Response(self.INVALID_RESPONSE, status=status.HTTP_400_BAD_REQUEST)
+
+        # Correct - single use, same guarantee a ParentInvite token has.
+        cache.delete(_reset_code_key(phone))
+        cache.delete(_reset_code_attempts_key(phone))
+
+        parent = User.objects.filter(phone_number=phone, role=User.Roles.PARENT).first()
+        if parent is None:
+            # The matching account was deleted/changed between send and
+            # verify - vanishingly rare, but the code genuinely matched what
+            # was stored, so this is a real inconsistency, not a guess.
+            return Response(self.INVALID_RESPONSE, status=status.HTTP_400_BAD_REQUEST)
+
+        invite = ParentInvite.objects.create(user=parent)
+        return Response({"token": invite.token})
 
 
 class MeView(APIView):

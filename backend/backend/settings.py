@@ -157,6 +157,11 @@ REST_FRAMEWORK = {
         # endpoint deliberately can't tell a caller whether the number even
         # has an account (see ForgotPasswordView).
         'forgot_password': '5/hour',
+        # Verifying a code - the real brute-force defense is the per-code
+        # attempt cap (RESET_CODE_MAX_VERIFY_ATTEMPTS, accounts/views.py),
+        # not this. This just stops one IP from hammering the endpoint
+        # across many different phone numbers.
+        'verify_reset_code': '20/hour',
     },
 }
 

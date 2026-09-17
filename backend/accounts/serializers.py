@@ -138,6 +138,15 @@ class ForgotPasswordSerializer(serializers.Serializer):
     phone_number = PhoneNumberField()
 
 
+class VerifyResetCodeSerializer(serializers.Serializer):
+    """Input for VerifyResetCodeView - the code ForgotPasswordView just
+    texted, plus the same phone number it was requested for (the code is
+    stored keyed by phone, not by any session/request identity)."""
+
+    phone_number = PhoneNumberField()
+    code = serializers.CharField()
+
+
 class MeSerializer(serializers.ModelSerializer):
     """Self-service: what GET /api/me/ returns and PATCH accepts, for
     whoever is signed in (parent or operator). Deliberately narrow -

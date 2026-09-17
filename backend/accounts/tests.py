@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from unittest.mock import patch
 
 from django.conf import settings
@@ -747,9 +748,11 @@ class ChangePasswordTest(TestCase):
 @locmem_cache
 @patch("accounts.views.debug_sms")
 class ForgotPasswordTest(TestCase):
-    """POST /api/forgot-password/ - public, self-service password reset by
-    phone number, no operator involved. See ForgotPasswordView's docstring
-    for why the response never reveals whether the number has an account."""
+    """POST /api/forgot-password/ - step 1 of the self-service reset: texts
+    a short code (not a link - see VerifyResetCodeTest for step 2). See
+    ForgotPasswordView's docstring for why the response never reveals
+    whether the number has an account, or whether it's hit the per-phone
+    send cap."""
 
     def setUp(self):
         cache.clear()
@@ -757,19 +760,21 @@ class ForgotPasswordTest(TestCase):
             username="forgot-pw-parent", role=User.Roles.PARENT, phone_number="+13055554444"
         )
 
-    def test_known_phone_creates_invite_and_texts_a_link(self, debug_sms):
+    def test_known_phone_texts_a_6_digit_code_and_creates_no_invite_yet(self, debug_sms):
         response = self.client.post(
             "/api/forgot-password/", {"phone_number": "+13055554444"}, content_type="application/json"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 1)
+        # No ParentInvite until the code is actually verified - see VerifyResetCodeTest.
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 0)
         debug_sms.delay_on_commit.assert_called_once()
         phone, message = debug_sms.delay_on_commit.call_args[0]
         self.assertEqual(phone, "+13055554444")
-        self.assertNotIn("testserver", message)  # see _set_password_link()'s regression note
-        self.assertIn("/set-password/", message)
+        code = re.search(r"\b(\d{6})\b", message)
+        self.assertIsNotNone(code)
+        self.assertEqual(cache.get("password_reset_code:+13055554444"), code.group(1))
 
-    def test_unknown_phone_gets_the_same_generic_response(self, debug_sms):
+    def test_unknown_phone_gets_the_same_generic_response_and_stores_no_code(self, debug_sms):
         known_response = self.client.post(
             "/api/forgot-password/", {"phone_number": "+13055554444"}, content_type="application/json"
         )
@@ -778,7 +783,7 @@ class ForgotPasswordTest(TestCase):
         )
         self.assertEqual(known_response.status_code, unknown_response.status_code)
         self.assertEqual(known_response.json(), unknown_response.json())
-        self.assertEqual(ParentInvite.objects.filter(user__phone_number="+13055559999").count(), 0)
+        self.assertIsNone(cache.get("password_reset_code:+13055559999"))
 
     def test_endpoint_is_throttled(self, debug_sms):
         rate = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["forgot_password"]
@@ -789,3 +794,104 @@ class ForgotPasswordTest(TestCase):
         ]
         self.assertTrue(all(r.status_code == 200 for r in responses[:limit]))
         self.assertEqual(responses[limit].status_code, 429)
+
+    def test_per_phone_send_cap_stops_sending_even_across_different_ips(self, debug_sms):
+        # This is exactly the scenario the cap exists for (see
+        # ForgotPasswordView's docstring): one target phone number, requests
+        # spread across several source IPs so the IP-keyed ScopedRateThrottle
+        # (also 5/hour) never engages on its own - each simulated call looks
+        # like a different caller, so any cutoff below can only be the
+        # per-phone cap, not the throttle above it.
+        from accounts.views import RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR
+
+        responses = [
+            self.client.post(
+                "/api/forgot-password/",
+                {"phone_number": "+13055554444"},
+                content_type="application/json",
+                REMOTE_ADDR=f"10.0.0.{i}",
+            )
+            for i in range(RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR + 1)
+        ]
+        self.assertTrue(all(r.status_code == 200 for r in responses))
+        self.assertEqual(responses[0].json(), responses[-1].json())
+        self.assertEqual(debug_sms.delay_on_commit.call_count, RESET_CODE_MAX_SENDS_PER_PHONE_PER_HOUR)
+
+
+@locmem_cache
+@patch("accounts.views.debug_sms")
+class VerifyResetCodeTest(TestCase):
+    """POST /api/forgot-password/verify/ - step 2: exchanges the code
+    ForgotPasswordView just texted for a real ParentInvite token."""
+
+    def setUp(self):
+        cache.clear()
+        self.parent = User.objects.create_user(
+            username="verify-code-parent", role=User.Roles.PARENT, phone_number="+13055556666"
+        )
+
+    def _request_code(self):
+        self.client.post("/api/forgot-password/", {"phone_number": "+13055556666"}, content_type="application/json")
+        return cache.get("password_reset_code:+13055556666")
+
+    def test_correct_code_returns_a_token_and_creates_one_invite(self, debug_sms):
+        code = self._request_code()
+        response = self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": code},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        token = response.json()["token"]
+        self.assertTrue(ParentInvite.objects.filter(user=self.parent, token=token).exists())
+
+    def test_code_is_single_use(self, debug_sms):
+        code = self._request_code()
+        self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": code},
+            content_type="application/json",
+        )
+        second = self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": code},
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 400)
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 1)
+
+    def test_wrong_code_rejected_and_does_not_create_an_invite(self, debug_sms):
+        self._request_code()
+        response = self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": "000000"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 0)
+
+    def test_no_code_ever_requested_is_rejected(self, debug_sms):
+        response = self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": "123456"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_too_many_wrong_guesses_locks_out_even_the_correct_code(self, debug_sms):
+        from accounts.views import RESET_CODE_MAX_VERIFY_ATTEMPTS
+
+        code = self._request_code()
+        for _ in range(RESET_CODE_MAX_VERIFY_ATTEMPTS):
+            self.client.post(
+                "/api/forgot-password/verify/",
+                {"phone_number": "+13055556666", "code": "000000"},
+                content_type="application/json",
+            )
+        locked_out = self.client.post(
+            "/api/forgot-password/verify/",
+            {"phone_number": "+13055556666", "code": code},
+            content_type="application/json",
+        )
+        self.assertEqual(locked_out.status_code, 400)
+        self.assertEqual(ParentInvite.objects.filter(user=self.parent).count(), 0)
