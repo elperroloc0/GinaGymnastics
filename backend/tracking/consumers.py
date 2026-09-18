@@ -48,6 +48,9 @@ class VanPositionConsumer(AsyncWebsocketConsumer):
                         "lon": float(last.longitude),
                         "course": float(last.course) if last.course is not None else None,
                         "device_time": last.device_time.isoformat(),
+                        "ignition": last.attributes.get("ignition"),
+                        "fuel": last.attributes.get("fuel", last.attributes.get("fuelLevel")),
+                        "speed": float(last.speed) if last.speed is not None else None,
                     }
                 )
             )

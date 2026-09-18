@@ -13,4 +13,4 @@ class ArrivalEventSerializer(serializers.ModelSerializer):
 class PositionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Position
-        fields = ["van", "latitude", "longitude", "device_time"]
+        fields = ["van", "latitude", "longitude", "device_time", "speed", "attributes"]

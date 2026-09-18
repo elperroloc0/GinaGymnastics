@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from accounts.models import Child, ChildSchedule, User
@@ -279,6 +279,117 @@ class PositionViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "unknown device")
+
+    def test_attributes_are_stored_whole(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {
+                    "latitude": 25.72, "longitude": -80.43,
+                    "attributes": {"ignition": True, "fuel": 78, "batteryLevel": 91},
+                },
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            Position.objects.latest("device_time").attributes,
+            {"ignition": True, "fuel": 78, "batteryLevel": 91},
+        )
+
+    def test_missing_attributes_stored_as_empty_dict(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Position.objects.latest("device_time").attributes, {})
+
+    @patch("tracking.views.get_channel_layer")
+    def test_ignition_fuel_speed_included_in_broadcast(self, get_channel_layer):
+        mock_layer = MagicMock()
+        mock_layer.group_send = AsyncMock()
+        get_channel_layer.return_value = mock_layer
+
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {
+                    "latitude": 25.72, "longitude": -80.43, "speed": 42.5,
+                    "attributes": {"ignition": True, "fuel": 78},
+                },
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(mock_layer.group_send.await_count, 2)  # van group + operators group
+        sent_payload = json.loads(mock_layer.group_send.await_args_list[0][0][1]["data"])
+        self.assertEqual(sent_payload["ignition"], True)
+        self.assertEqual(sent_payload["fuel"], 78)
+        self.assertEqual(sent_payload["speed"], 42.5)
+
+    @patch("tracking.views.get_channel_layer")
+    def test_missing_ignition_fuel_speed_broadcast_as_null_not_a_default(self, get_channel_layer):
+        mock_layer = MagicMock()
+        mock_layer.group_send = AsyncMock()
+        get_channel_layer.return_value = mock_layer
+
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        sent_payload = json.loads(mock_layer.group_send.await_args_list[0][0][1]["data"])
+        self.assertIsNone(sent_payload["ignition"])
+        self.assertIsNone(sent_payload["fuel"])
+        self.assertIsNone(sent_payload["speed"])
+
+    def test_speed_is_stored(self):
+        response = self.client.post(
+            "/webhooks/position/",
+            data={
+                "position": {"latitude": 25.72, "longitude": -80.43, "speed": 42.5},
+                "device": {"uniqueId": "IMEI12345"},
+            },
+            content_type="application/json",
+            headers={"X-Webhook-Secret": self.secret},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(float(Position.objects.latest("device_time").speed), 42.5)
+
+    async def test_seed_position_matches_the_live_broadcast_shape(self):
+        # get_seed_positions() is what a client receives immediately on
+        # connect (before any live update) - it must carry the exact same
+        # fields a live traccar_position() broadcast does, or the van status
+        # card (ignition/fuel/speed) would flicker from populated to blank
+        # the instant the first live update actually arrives.
+        await Position.objects.acreate(
+            van=self.van, latitude=25.72, longitude=-80.43, speed=42.5,
+            attributes={"ignition": True, "fuel": 78}, device_time=timezone.now(),
+        )
+        consumer = VanPositionConsumer()
+        seeds = await consumer.get_seed_positions([self.van.id])
+        self.assertEqual(len(seeds), 1)
+        payload = json.loads(seeds[0])
+        self.assertEqual(payload["ignition"], True)
+        self.assertEqual(payload["fuel"], 78)
+        self.assertEqual(payload["speed"], 42.5)
 
 
 class EventListPermissionTest(TestCase):

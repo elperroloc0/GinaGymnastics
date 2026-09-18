@@ -38,6 +38,19 @@ class Position(models.Model):
     # when the device didn't report one (rare) rather than defaulting to 0,
     # which would otherwise look like a real "facing north" reading.
     course = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    # Traccar's own top-level position field (knots), reported the same way
+    # course is - not one of the sensor-derived `attributes` below. Stored
+    # as its own column (not folded into attributes) specifically so
+    # get_seed_positions() can reconstruct the exact same payload shape
+    # traccar_position() broadcasts live - see that function's own comment.
+    speed = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Raw Traccar attributes for this fix (e.g. ignition, fuel/fuelLevel,
+    # battery, odometer) - JSON rather than typed columns because it's not
+    # yet known which keys the Teltonika FMM00A actually reports through
+    # Traccar's decoding; that's only confirmed on the real hardware test
+    # (see architecture-plan.md). traccar_position() promotes a few of
+    # these into the live WebSocket payload - see tracking/views.py.
+    attributes = models.JSONField(default=dict, blank=True)
     device_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
 

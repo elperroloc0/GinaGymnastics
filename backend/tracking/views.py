@@ -213,9 +213,18 @@ def traccar_position(request):
 
     device_time = _position_time(position)
     course = position.get("course")
+    # Traccar's own top-level field (knots) - not one of the sensor-derived
+    # attributes below, reported the same way course is.
+    speed = position.get("speed")
+    # Traccar reports these under attributes (ignition, fuel/fuelLevel, and
+    # similar sensor-derived data) - stored whole, since which keys actually
+    # show up depends on the tracker/wiring and won't be confirmed until the
+    # real hardware test (see Position.attributes' own doc comment).
+    attributes = position.get("attributes", {})
 
     Position.objects.create(
-        van=van, latitude=lat, longitude=lon, course=course, device_time=device_time
+        van=van, latitude=lat, longitude=lon, course=course, speed=speed,
+        device_time=device_time, attributes=attributes,
     )
 
     channel_layer = get_channel_layer()
@@ -225,6 +234,12 @@ def traccar_position(request):
     # van_id and device_time are both required by the clients: operators watch
     # every van through one socket and can't tell them apart otherwise, and the
     # parent's "last fix N minutes ago" is measured from device_time.
+    #
+    # ignition/fuel come from attributes (not every device reports either).
+    # All three are None when not reported, same convention as course,
+    # rather than a misleading 0/false default. Must match
+    # get_seed_positions()'s payload shape exactly - see that function's
+    # own comment for why.
     payload = json.dumps(
         {
             "van_id": van.id,
@@ -232,6 +247,9 @@ def traccar_position(request):
             "lon": float(lon),
             "course": float(course) if course is not None else None,
             "device_time": device_time.isoformat(),
+            "ignition": attributes.get("ignition"),
+            "fuel": attributes.get("fuel", attributes.get("fuelLevel")),
+            "speed": float(speed) if speed is not None else None,
         }
     )
 
