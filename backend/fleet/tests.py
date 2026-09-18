@@ -219,3 +219,40 @@ class VanProtectedDeleteTest(TestCase):
         response = self.client_operator.delete(f"/api/vans/{van.id}/")
         self.assertEqual(response.status_code, 400)
         self.assertTrue(Van.objects.filter(id=van.id).exists())
+
+
+class MultiChildSameRouteTest(TestCase):
+    """Regression: siblings usually ride the same route, which joins back to
+    the same Route/Van row once per matching child in RouteViewSet's and
+    VanViewSet's parent-scoped querysets. Without .distinct(), that
+    duplicate row turned a retrieve into Route.MultipleObjectsReturned - a
+    500, not a permissions issue, so it was never caught by the
+    single-child scoping tests above."""
+
+    def setUp(self):
+        self.parent = User.objects.create_user(username="two-kids-parent", password="pw12345!", role=User.Roles.PARENT)
+        self.van = Van.objects.create(name="TWO-KIDS-VAN", tracker_imei="TWO-KIDS-IMEI")
+        school = GeoFence.objects.create(name="Two Kids School", location_type=GeoFence.LocationTypes.SCHOOL, latitude=25.5, longitude=-80.5, radius=50, traccar_id=401)
+        gym = GeoFence.objects.create(name="Two Kids Gym", location_type=GeoFence.LocationTypes.GINAS_GYM, latitude=25.6, longitude=-80.6, radius=50, traccar_id=402)
+        self.route = Route.objects.create(van=self.van, origin=school, destination=gym)
+        Child.objects.create(name="Sibling One", parent=self.parent, route=self.route)
+        Child.objects.create(name="Sibling Two", parent=self.parent, route=self.route)
+
+        self.client_parent = APIClient()
+        self.client_parent.force_authenticate(user=self.parent)
+
+    def test_retrieving_the_shared_route_does_not_500(self):
+        response = self.client_parent.get(f"/api/routes/{self.route.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], self.route.id)
+
+    def test_retrieving_the_shared_van_does_not_500(self):
+        response = self.client_parent.get(f"/api/vans/{self.van.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], self.van.id)
+
+    def test_list_endpoints_do_not_duplicate_the_shared_row(self):
+        routes = self.client_parent.get("/api/routes/").json()
+        vans = self.client_parent.get("/api/vans/").json()
+        self.assertEqual([r["id"] for r in routes], [self.route.id])
+        self.assertEqual([v["id"] for v in vans], [self.van.id])

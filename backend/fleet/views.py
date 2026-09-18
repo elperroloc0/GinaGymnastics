@@ -22,7 +22,11 @@ class RouteViewSet(viewsets.ModelViewSet):
         if user.role == User.Roles.OPERATOR or user.is_superuser:
             return Route.objects.all()
 
-        return Route.objects.filter(children__parent=user)
+        # .distinct() matters here: two children of the same parent sharing
+        # a route (the common case - siblings usually ride the same route)
+        # duplicates the Route row once per matching child via this join,
+        # which turns a retrieve (.get(pk=...)) into MultipleObjectsReturned.
+        return Route.objects.filter(children__parent=user).distinct()
 
     serializer_class = RouteSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
@@ -79,7 +83,10 @@ class VanViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == User.Roles.OPERATOR or user.is_superuser:
             return Van.objects.all()
-        return Van.objects.filter(routes__children__parent=user)
+        # Same duplicate-row reasoning as RouteViewSet.get_queryset() above -
+        # two children on the same route (or two routes on the same van)
+        # both join back to this one Van row.
+        return Van.objects.filter(routes__children__parent=user).distinct()
     serializer_class = VanSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
 
