@@ -8,7 +8,7 @@ from django.db import transaction
 from django.shortcuts import render
 from django.utils import timezone
 from django.utils.text import slugify
-from notifications.tasks import debug_sms
+from notifications.tasks import debug_sms, send_arrival_email
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -111,6 +111,26 @@ class OperatorViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return User.objects.filter(role=User.Roles.OPERATOR, is_superuser=False)
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            operator = serializer.save()
+            # Only when no password was supplied - the account is unusable
+            # until the invite link is followed (SetPasswordView).
+            invite = None if operator.has_usable_password() else ParentInvite.objects.create(user=operator)
+
+        if invite is None:
+            return
+        message = (
+            "Gina's Gymnastics: an operator account was created for you. "
+            f"Set your password here: {_set_password_link(invite.token)}"
+        )
+        # Sent after commit, same as EnrollParentView. SMS first, email as
+        # the fallback for an operator with no phone number.
+        if operator.phone_number:
+            debug_sms.delay_on_commit(str(operator.phone_number), message)
+        elif operator.email:
+            send_arrival_email.delay_on_commit(operator.email, message)
 
     @action(detail=True, methods=["post"])
     def deactivate(self, request, pk=None):

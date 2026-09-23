@@ -59,11 +59,11 @@ class EnrollParentSerializer(serializers.Serializer):
 
 class OperatorSerializer(serializers.ModelSerializer):
     """Input/output for OperatorViewSet - operator-only account creation and
-    listing. `password` is write-only: it's set on the new account here, not
-    via a texted invite link like ParentInvite (that mechanism is
-    parent-specific)."""
+    listing. `password` is write-only and optional: omitted, the account gets
+    an unusable password and OperatorViewSet.perform_create sends a
+    ParentInvite set-password link instead (same flow as parents)."""
 
-    password = serializers.CharField(write_only=True, validators=[validate_password])
+    password = serializers.CharField(write_only=True, required=False, validators=[validate_password])
 
     class Meta:
         model = User
@@ -71,9 +71,12 @@ class OperatorSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "is_active"]
 
     def create(self, validated_data):
-        password = validated_data.pop("password")
+        password = validated_data.pop("password", None)
         user = User(role=User.Roles.OPERATOR, **validated_data)
-        user.set_password(password)
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
         user.save()
         return user
 

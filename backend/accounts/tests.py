@@ -489,6 +489,19 @@ class OperatorViewSetTest(TestCase):
         self.assertTrue(created.check_password("pw12345!"))
         self.assertNotIn("password", response.json())
 
+    @patch("accounts.views.debug_sms")
+    def test_create_without_password_sends_invite_link(self, mock_sms):
+        payload = self._create_payload(phone_number="+13055550111")
+        del payload["password"]
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client_operator.post("/api/operators/", payload, content_type="application/json")
+        self.assertEqual(response.status_code, 201)
+        created = User.objects.get(username="new-op")
+        self.assertFalse(created.has_usable_password())
+        invite = created.invites.get()
+        mock_sms.delay_on_commit.assert_called_once()
+        self.assertIn(invite.token, mock_sms.delay_on_commit.call_args[0][1])
+
     def test_operator_can_list_operators(self):
         response = self.client_operator.get("/api/operators/")
         usernames = [o["username"] for o in response.json()]
