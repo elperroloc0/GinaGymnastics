@@ -14,7 +14,7 @@ def _base_url() -> str:
 
 
 def _auth() -> tuple[str, str]:
-    return (os.environ["TRACCAR_API_USERNAME"], os.environ["TRACCAR_API_PASSWORD"])
+    return (os.environ["TRACCAR_API_EMAIL"], os.environ["TRACCAR_API_PASSWORD"])
 
 
 def _wkt_circle(latitude: float, longitude: float, radius: float) -> str:
