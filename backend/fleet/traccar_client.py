@@ -55,6 +55,42 @@ def update_geofence(traccar_id: int, name: str, latitude: float, longitude: floa
     )
 
 
+def get_device_id(imei: str) -> int:
+    # Van stores the tracker's IMEI, which Traccar calls uniqueId - but the
+    # permissions API below wants Traccar's own numeric device id.
+    response = _request("GET", "/api/devices", params={"uniqueId": imei})
+    devices = response.json()
+    if not devices:
+        raise TraccarAPIError(f"No Traccar device with uniqueId {imei}")
+    return devices[0]["id"]
+
+
+def list_device_geofence_ids(device_id: int) -> list[int]:
+    # Without ?deviceId this endpoint lists every geofence the API user owns,
+    # not the ones linked to the device - only linked ones generate events.
+    response = _request("GET", "/api/geofences", params={"deviceId": device_id})
+    return [g["id"] for g in response.json()]
+
+
+def link_geofence(device_id: int, geofence_id: int) -> None:
+    # Traccar only computes geofence enter/exit for geofences linked to the
+    # device (a permission), creating the geofence alone is not enough.
+    try:
+        _request("POST", "/api/permissions", json={"deviceId": device_id, "geofenceId": geofence_id})
+    except TraccarAPIError as e:
+        # 400 = link already exists, which is the state we want.
+        if e.status_code != 400:
+            raise
+
+
+def unlink_geofence(device_id: int, geofence_id: int) -> None:
+    try:
+        _request("DELETE", "/api/permissions", json={"deviceId": device_id, "geofenceId": geofence_id})
+    except TraccarAPIError as e:
+        if e.status_code != 404:
+            raise
+
+
 def delete_geofence(traccar_id: int) -> None:
     # Callers treat failures here as best-effort (log and move on) rather than
     # letting a Traccar-side failure block deleting our own row - see

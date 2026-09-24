@@ -98,7 +98,8 @@ class FleetPermissionScopingTest(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_operator_write_allowed(self):
+    @patch("fleet.views._sync_van_geofences")
+    def test_operator_write_allowed(self, _sync):
         van_c = Van.objects.create(name="VAN-C", tracker_imei="IMEI-C")
         response = self.client_operator.patch(
             f"/api/routes/{self.route_a.id}/",
@@ -196,6 +197,94 @@ class GeoFenceTraccarProvisioningTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertTrue(GeoFence.objects.filter(id=school.id).exists())
         delete_geofence.assert_not_called()
+
+
+@patch("fleet.views.traccar_client.unlink_geofence")
+@patch("fleet.views.traccar_client.link_geofence")
+@patch("fleet.views.traccar_client.list_device_geofence_ids")
+@patch("fleet.views.traccar_client.get_device_id")
+class RouteTraccarLinkingTest(TestCase):
+    """Traccar only fires geofence events for zones linked to the van's device,
+    so RouteViewSet links each route's origin/destination to its van's tracker.
+    """
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="route-operator", password="pw12345!", role=User.Roles.OPERATOR)
+        self.client_operator = APIClient()
+        self.client_operator.force_authenticate(user=self.operator)
+
+        self.van = Van.objects.create(name="VAN-L", tracker_imei="IMEI-L")
+        self.school = GeoFence.objects.create(
+            name="School L", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.1, longitude=-80.1, radius=50, traccar_id=601,
+        )
+        self.gym = GeoFence.objects.create(
+            name="Gym L", location_type=GeoFence.LocationTypes.GINAS_GYM,
+            latitude=25.2, longitude=-80.2, radius=50, traccar_id=602,
+        )
+
+    def _post_route(self):
+        return self.client_operator.post(
+            "/api/routes/",
+            {"van": self.van.id, "origin": self.school.id, "destination": self.gym.id},
+            content_type="application/json",
+        )
+
+    def test_create_links_origin_and_destination_to_van_device(self, get_device_id, list_ids, link, unlink):
+        get_device_id.return_value = 7
+        list_ids.return_value = []
+        response = self._post_route()
+        self.assertEqual(response.status_code, 201)
+        get_device_id.assert_called_with("IMEI-L")
+        linked = {call.args for call in link.call_args_list}
+        self.assertEqual(linked, {(7, 601), (7, 602)})
+        unlink.assert_not_called()
+
+    def test_create_skips_already_linked_zones(self, get_device_id, list_ids, link, unlink):
+        get_device_id.return_value = 7
+        list_ids.return_value = [601]
+        self._post_route()
+        link.assert_called_once_with(7, 602)
+
+    def test_create_failure_rolls_back_route(self, get_device_id, list_ids, link, unlink):
+        get_device_id.side_effect = traccar_client.TraccarAPIError("no device")
+        response = self._post_route()
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Route.objects.exists())
+
+    def test_delete_unlinks_zones_no_other_route_uses(self, get_device_id, list_ids, link, unlink):
+        route = Route.objects.create(van=self.van, origin=self.school, destination=self.gym)
+        get_device_id.return_value = 7
+        list_ids.return_value = [601, 602]
+        response = self.client_operator.delete(f"/api/routes/{route.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual({call.args for call in unlink.call_args_list}, {(7, 601), (7, 602)})
+
+    def test_delete_keeps_zone_shared_with_another_route(self, get_device_id, list_ids, link, unlink):
+        other_school = GeoFence.objects.create(
+            name="School M", location_type=GeoFence.LocationTypes.SCHOOL,
+            latitude=25.3, longitude=-80.3, radius=50, traccar_id=603,
+        )
+        route = Route.objects.create(van=self.van, origin=self.school, destination=self.gym)
+        Route.objects.create(van=self.van, origin=other_school, destination=self.gym)
+        get_device_id.return_value = 7
+        list_ids.return_value = [601, 602, 603]
+        self.client_operator.delete(f"/api/routes/{route.id}/")
+        unlink.assert_called_once_with(7, 601)
+
+    def test_delete_succeeds_even_if_traccar_fails(self, get_device_id, list_ids, link, unlink):
+        route = Route.objects.create(van=self.van, origin=self.school, destination=self.gym)
+        get_device_id.side_effect = traccar_client.TraccarAPIError("unreachable")
+        response = self.client_operator.delete(f"/api/routes/{route.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Route.objects.filter(id=route.id).exists())
+
+    def test_unlink_never_touches_zones_we_do_not_manage(self, get_device_id, list_ids, link, unlink):
+        route = Route.objects.create(van=self.van, origin=self.school, destination=self.gym)
+        get_device_id.return_value = 7
+        list_ids.return_value = [601, 602, 999]  # 999 has no GeoFence row
+        self.client_operator.delete(f"/api/routes/{route.id}/")
+        self.assertNotIn((7, 999), {call.args for call in unlink.call_args_list})
 
 
 class VanProtectedDeleteTest(TestCase):

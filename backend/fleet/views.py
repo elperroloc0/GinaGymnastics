@@ -2,6 +2,7 @@ import logging
 
 from accounts.models import User
 from accounts.permission import IsOperatorOrReadOnly
+from django.db import transaction
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from rest_framework import permissions, viewsets
@@ -14,6 +15,30 @@ from .serializers import GeoFenceSerializer, RouteSerializer, VanSerializer
 logger = logging.getLogger(__name__)
 
 # Create your views here.
+
+
+def _sync_van_geofences(van):
+    """Make the van's Traccar device linked to exactly the zones its routes use.
+
+    Diffing against Traccar's current links (rather than link/unlink per
+    route) keeps this idempotent and correct when several routes share a
+    zone: deleting one route must not unlink a zone another route still needs.
+    Only zones we manage (GeoFence rows) are ever unlinked.
+    """
+    device_id = traccar_client.get_device_id(van.tracker_imei)
+
+    wanted = set()
+    for route in Route.objects.filter(van=van).select_related("origin", "destination"):
+        wanted.add(route.origin.traccar_id)
+        wanted.add(route.destination.traccar_id)
+
+    linked = set(traccar_client.list_device_geofence_ids(device_id))
+    managed = set(GeoFence.objects.values_list("traccar_id", flat=True))
+
+    for geofence_id in wanted - linked:
+        traccar_client.link_geofence(device_id, geofence_id)
+    for geofence_id in (linked & managed) - wanted:
+        traccar_client.unlink_geofence(device_id, geofence_id)
 
 
 class RouteViewSet(viewsets.ModelViewSet):
@@ -30,6 +55,40 @@ class RouteViewSet(viewsets.ModelViewSet):
 
     serializer_class = RouteSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
+
+    def perform_create(self, serializer):
+        # Atomic so a Traccar failure rolls the route back - a route whose
+        # zones aren't linked to the van's tracker would silently never fire
+        # arrival events.
+        try:
+            with transaction.atomic():
+                route = serializer.save()
+                _sync_van_geofences(route.van)
+        except traccar_client.TraccarAPIError as e:
+            raise ValidationError({"detail": f"Could not link geofences in Traccar: {e}"})
+
+    def perform_update(self, serializer):
+        old_van = serializer.instance.van
+        try:
+            with transaction.atomic():
+                route = serializer.save()
+                _sync_van_geofences(route.van)
+                if old_van.pk != route.van.pk:
+                    _sync_van_geofences(old_van)
+        except traccar_client.TraccarAPIError as e:
+            raise ValidationError({"detail": f"Could not link geofences in Traccar: {e}"})
+
+    def perform_destroy(self, instance):
+        van = instance.van
+        instance.delete()
+
+        # Best-effort like GeoFenceViewSet.perform_destroy: the route is
+        # already gone, a stale link in Traccar is harmless (no route uses
+        # it) and the next sync for this van cleans it up.
+        try:
+            _sync_van_geofences(van)
+        except traccar_client.TraccarAPIError:
+            logger.warning("Failed to unlink Traccar geofences for van %s after deleting route", van.pk, exc_info=True)
 
 
 class GeoFenceViewSet(viewsets.ModelViewSet):
