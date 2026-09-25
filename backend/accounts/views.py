@@ -15,6 +15,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
+from tracking.models import Position
+from tracking.services import is_ride_active
 
 from .models import Child, ChildSchedule, ParentInvite, User
 from .serializers import (
@@ -84,6 +86,32 @@ class ChildViewSet(viewsets.ModelViewSet):
 
     serializer_class = ChildSerializer
     permission_classes = [permissions.IsAuthenticated, IsOperatorOrReadOnly]
+
+    # Cap on returned fixes: far more than any ride produces, just a backstop.
+    TRAIL_MAX_POINTS = 5000
+
+    @action(detail=True, methods=["get"])
+    def trail(self, request, pk=None):
+        """The path this child's van has driven since the current ride started.
+
+        Lets a freshly opened map draw the whole line instead of only what it
+        happened to see live. Deliberately per-child rather than per-van: it goes
+        through get_queryset() (a parent only reaches their own children) and
+        answers only while is_ride_active() - the same gate as the live socket -
+        so it can't be used to read the van's whereabouts outside a ride, which
+        the operator-only /api/positions/ exists to prevent.
+        """
+        child = self.get_object()
+        if not is_ride_active(child):
+            return Response([])
+
+        fixes = list(
+            Position.objects.filter(van_id=child.route.van_id, device_time__gte=child.active_ride_start)
+            .order_by("-device_time")
+            .values_list("longitude", "latitude")[: self.TRAIL_MAX_POINTS]
+        )
+        fixes.reverse()
+        return Response([{"lon": float(lon), "lat": float(lat)} for lon, lat in fixes])
 
 
 class ChildScheduleViewSet(viewsets.ModelViewSet):

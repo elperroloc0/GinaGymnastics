@@ -3,6 +3,7 @@ from fleet.models import Route
 from phonenumber_field.serializerfields import PhoneNumberField
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from tracking.services import is_ride_active
 
 from .models import Child, ChildSchedule, User
 
@@ -17,10 +18,27 @@ class ChildSerializer(serializers.ModelSerializer):
     schedule = ChildScheduleSerializer(many=True, read_only=True)
     parent_name = serializers.CharField(source="parent.first_name", read_only=True)
     parent_phone_number = serializers.CharField(source="parent.phone_number", read_only=True)
+    # is_ride_active (not the raw flag) so the operator sees the same answer
+    # the live-map gate gives, including the 6h self-healing cap.
+    ride_active = serializers.SerializerMethodField()
 
     class Meta:
         model = Child
-        fields = ["id", "name", "parent", "parent_name", "parent_phone_number", "route", "schedule"]
+        fields = [
+            "id",
+            "name",
+            "parent",
+            "parent_name",
+            "parent_phone_number",
+            "route",
+            "schedule",
+            "ride_active",
+            "active_ride_start",
+        ]
+        read_only_fields = ["active_ride_start"]
+
+    def get_ride_active(self, child) -> bool:
+        return is_ride_active(child)
 
 
 class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):

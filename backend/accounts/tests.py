@@ -206,6 +206,56 @@ class CrossParentIsolationTest(TestCase):
         ids = {c["id"] for c in response.json()}
         self.assertEqual(ids, {self.child_a.id, self.child_b.id})
 
+    def test_children_expose_ride_active_state(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        idle = self.client_operator.get("/api/children/").json()
+        self.assertTrue(all(c["ride_active"] is False for c in idle))
+
+        self.child_a.active_ride = True
+        self.child_a.active_ride_start = timezone.now()
+        self.child_a.save()
+        by_id = {c["id"]: c for c in self.client_operator.get("/api/children/").json()}
+        self.assertTrue(by_id[self.child_a.id]["ride_active"])
+        self.assertIsNotNone(by_id[self.child_a.id]["active_ride_start"])
+        self.assertFalse(by_id[self.child_b.id]["ride_active"])
+
+        # Stuck flag past the 6h cap reads as inactive.
+        self.child_a.active_ride_start = timezone.now() - timedelta(hours=7)
+        self.child_a.save()
+        by_id = {c["id"]: c for c in self.client_operator.get("/api/children/").json()}
+        self.assertFalse(by_id[self.child_a.id]["ride_active"])
+
+    def test_trail_returns_positions_since_ride_start_only_while_active(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from tracking.models import Position
+
+        van = self.child_a.route.van
+        start = timezone.now() - timedelta(minutes=10)
+        for minutes, lat in ((15, 25.60), (8, 25.61), (5, 25.62), (1, 25.63)):
+            Position.objects.create(van=van, latitude=lat, longitude=-80.5, device_time=timezone.now() - timedelta(minutes=minutes))
+
+        # No active ride: nothing, even though the van has history.
+        self.assertEqual(self.client_a.get(f"/api/children/{self.child_a.id}/trail/").json(), [])
+
+        self.child_a.active_ride = True
+        self.child_a.active_ride_start = start
+        self.child_a.save()
+
+        body = self.client_a.get(f"/api/children/{self.child_a.id}/trail/").json()
+        # Only fixes from after the ride started, oldest first.
+        self.assertEqual([p["lat"] for p in body], [25.61, 25.62, 25.63])
+
+        # Operators can read any child's; another parent can't reach it at all.
+        self.assertEqual(self.client_operator.get(f"/api/children/{self.child_a.id}/trail/").status_code, 200)
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.parent_b)
+        self.assertEqual(client_b.get(f"/api/children/{self.child_a.id}/trail/").status_code, 404)
+
     def test_parent_cannot_write_even_their_own_child(self):
         # IsOperatorOrReadOnly blocks writes for non-operators outright - not
         # just other parents' data, the owning parent too. Parents don't edit

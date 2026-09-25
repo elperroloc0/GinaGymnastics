@@ -190,6 +190,41 @@ class ArrivalSmsTest(TestCase):
         self.assertNotIn("<link to live map>", message)
         self.assertNotIn("None", message)
 
+    def test_is_ride_active_false_when_flag_set_without_start_time(self):
+        from .services import is_ride_active
+
+        self.child.active_ride = True
+        self.child.active_ride_start = None
+        self.assertFalse(is_ride_active(self.child))
+
+    def _post_gym_arrival(self):
+        payload = {
+            "event": {"id": 2, "deviceId": 1, "type": "geofenceEnter", "eventTime": timezone.now().isoformat(), "positionId": 10, "geofenceId": 502},
+            "device": {"id": 1, "name": "tracker-1", "uniqueId": "IMEI-SMS"},
+            "geofence": {"id": 502, "name": "Test Gym"},
+        }
+        return self.client.post(
+            "/webhooks/arrival/", data=payload, content_type="application/json", headers={"X-Webhook-Secret": self.secret},
+        )
+
+    @patch("notifications.services.debug_sms")
+    def test_gym_arrival_does_not_notify_child_without_active_ride(self, debug_sms):
+        self.assertFalse(self.child.active_ride)
+        response = self._post_gym_arrival()
+        self.assertEqual(response.status_code, 200)
+        debug_sms.delay_on_commit.assert_not_called()
+
+    @patch("notifications.services.debug_sms")
+    def test_gym_arrival_notifies_child_with_active_ride_and_ends_it(self, debug_sms):
+        self.child.active_ride = True
+        self.child.active_ride_start = timezone.now()
+        self.child.save()
+        response = self._post_gym_arrival()
+        self.assertEqual(response.status_code, 200)
+        debug_sms.delay_on_commit.assert_called_once()
+        self.child.refresh_from_db()
+        self.assertFalse(self.child.active_ride)
+
 
 @in_memory_backends
 class PositionViewTest(TestCase):

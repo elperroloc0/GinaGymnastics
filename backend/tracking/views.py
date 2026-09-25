@@ -127,7 +127,7 @@ def arrival_webhook(request):
         # Tolerance around the scheduled pickup time - GPS/webhook timing isn't
         # exact, and this also stops a parent from getting map access hours
         # before/after the actual pickup window.
-        BUFFER = timedelta(minutes=30)
+        BUFFER = timedelta(minutes=15)
 
         school_route = Route.objects.filter(origin=traccar_fence)
 
@@ -164,7 +164,10 @@ def arrival_webhook(request):
         # --- GYM
 
         gym_route = Route.objects.filter(destination=traccar_fence)
-        candidates = Child.objects.filter(route__in=gym_route)
+        # Only children with a ride in progress: without this, everyone on the
+        # route got "arrived" even if the van never picked them up. Not using
+        # is_ride_active() - a stale (>6h) flag should still be cleared here.
+        candidates = Child.objects.filter(route__in=gym_route, active_ride=True)
 
         channel_layer = get_channel_layer()
 
