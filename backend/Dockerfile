@@ -1,18 +1,27 @@
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN python -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/venv/bin:$PATH"
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=builder /venv /venv
 COPY . .
 
-RUN chmod +x entrypoint.sh
-
-RUN useradd --create-home appuser \
+RUN chmod +x entrypoint.sh \
+    && useradd --create-home appuser \
     && mkdir -p /app/staticfiles \
     && chown -R appuser:appuser /app
 USER appuser
