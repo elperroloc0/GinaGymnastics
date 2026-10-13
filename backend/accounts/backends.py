@@ -46,10 +46,23 @@ class FlexibleLoginBackend(ModelBackend):
         if normalized_phone.startswith("+"):
             query |= Q(phone_number=normalized_phone)
 
-        user = User.objects.filter(query).first()
-        if user is None:
+        # Email (and phone, across roles) isn't unique, and one account's
+        # username can be another's email - e.g. the same person as both an
+        # operator and an enrolled parent. Taking only .first() meant every
+        # account but the oldest could never log in by that identifier, so
+        # try each match and keep the one this password belongs to, literal
+        # username matches first.
+        candidates = sorted(
+            User.objects.filter(query).order_by("pk"),
+            key=lambda u: u.username.lower() != username.lower(),
+        )
+        if not candidates:
+            # Same timing mitigation as ModelBackend: hash once anyway so an
+            # unknown identifier doesn't answer measurably faster.
+            User().set_password(password)
             return None
 
-        if user.check_password(password) and self.user_can_authenticate(user):
-            return user
+        for user in candidates:
+            if user.check_password(password) and self.user_can_authenticate(user):
+                return user
         return None
