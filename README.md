@@ -1,12 +1,24 @@
 # Gina Gymnastics Tracker
 
-Real-time van tracking for a gymnastics center's school pickup service. A GPS tracker on the van reports through [Traccar](https://www.traccar.org/), and a Django backend turns raw position data into two usefull things: an arrival notification to the right parents, and a live map scoped to their child's ride.
+Real-time van tracking for a gymnastics center's school pickup service. A GPS tracker on the van reports through Traccar, and a Django backend turns raw position data into two useful things: an arrival notification to the right parents, and a live map scoped to their child's ride.
+
+This repo is the backend, Traccar, and Caddy. The React frontend (parent app and operator console) lives in [gina-ride-tracker-web](https://github.com/elperroloc0/gina-ride-tracker-web).
 
 Setting this up from scratch (device, SIM, Traccar, backend, frontend)? See [SETUP.md](SETUP.md).
 
+## Demo
+
+...
+
+| Parent: live ride | Operator console | Arrival text |
+|---|---|---|
+| ![Parent live map](docs/parent-live-map.gif) | ![Operator console](docs/operator-console.png) | ![Arrival SMS](docs/arrival-sms.png) |
+
+**Live app:** _link goes here._
+
 ## Why these choices
 
-**Daphne + Django Channels instead of plain WSGI.** The frontend needs a live van marker, that means one process has to hold a WebSocket open per connected client while also serving normal HTTP — WSGI can't do both, so the whole backend runs as a single ASGI application (`backend/asgi.py`) under Daphne, with `django.contrib.staticfiles`-style HTTP handled by the same process that upgrades `/ws/` connections.
+**Daphne + Django Channels instead of plain WSGI.** The frontend needs a live van marker, which means the server has to hold a WebSocket open for each connected client while also serving normal HTTP. WSGI can't do both, so the whole backend runs as a single ASGI application (`backend/asgi.py`) under Daphne: the same process serves the REST API and upgrades `/ws/` connections.
 
 **A ticket-based WebSocket auth handshake, not cookies.** The frontend is a separate origin (deployed on Vercel) talking to this API cross-origin, and browsers don't attach `Authorization` headers to WebSocket upgrade requests. `tracking/middleware.py` solves this without inventing a second auth system: the client requests a short-lived ticket over normal authenticated HTTP, then opens the socket with `?ticket=...`; the middleware resolves it to a user via a one-time Redis cache lookup (`cache.delete` on read) and discards it. `channels.security.websocket.AllowedHostsOriginValidator` then checks the `Origin` header against the same `ALLOWED_HOSTS`/CORS list the rest of the app trusts.
 
@@ -29,7 +41,7 @@ flowchart TB
     tracker["Teltonika FMM00A\n(GPS tracker in van)"]
 
     subgraph vps["Hetzner VPS — Docker Compose"]
-        caddy["Caddy\nTLS termination + reverse proxy"]
+        caddy["Caddy\nTLS termination + reverse proxy\nserves /static from a shared volume"]
         daphne["Daphne / Django Channels\nHTTP + WebSocket, one ASGI app"]
         celery["Celery worker"]
         traccar["Traccar\nGPS ingestion + geofencing"]
@@ -48,7 +60,6 @@ flowchart TB
     operator -- HTTPS/WSS --> caddy
     caddy -- "/api /admin /webhooks" --> daphne
     caddy -- "/ws upgrade" --> daphne
-    caddy -- "/static" --> daphne
 
     daphne <--> postgres
     daphne <--> redis
@@ -82,3 +93,11 @@ Request flow for the two events that matter: the van enters or leaves a geofence
 | Notification delivery | Twilio (SMS), Gmail SMTP (email) |
 | Deployment | Docker Compose on a Hetzner VPS |
 | Frontend | React (separate repo, deployed on Vercel) |
+
+## Tests
+
+134 backend tests cover the WebSocket ticket handshake, cross-parent data isolation, the Traccar webhook and geofence provisioning, schedule-based notification targeting, and the invite and password flows.
+
+```bash
+docker compose exec django python manage.py test
+```
