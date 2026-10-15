@@ -17,8 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/venv/bin:$PATH"
 
-COPY --from=builder /venv /venv
-COPY . .
+COPY --from=builder /vь ььььюбб имаснепгнршьбьььCOPY . .
 
 RUN chmod +x entrypoint.sh \
     && useradd --create-home appuser \

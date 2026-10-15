@@ -508,6 +508,43 @@ class FlexibleLoginTest(TestCase):
         payload = _decode_jwt_payload(response.json()["access"])
         self.assertEqual(payload["user_id"], str(self.user.id))
 
+    def test_surrounding_whitespace_is_ignored(self):
+        # Phone keyboards and password managers routinely leave a trailing
+        # space after an autofilled email/username; iexact alone won't match it.
+        for identifier in (" flex-user", "flex-user ", " Flex@Example.com\t", "3055550111 "):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(self._login(identifier).status_code, 200)
+
+    def test_email_shared_with_an_older_account_still_logs_in_the_right_one(self):
+        # Email isn't unique: the same person can be an operator and an
+        # enrolled parent with one email on both. Matching only the first
+        # (oldest) account meant the newer one's password always 401'd.
+        newer = User.objects.create_user(
+            username="flex-parent", email="flex@example.com", password="other-pw!", role=User.Roles.PARENT
+        )
+
+        for user, password in ((self.user, "pw12345!"), (newer, "other-pw!")):
+            with self.subTest(username=user.username):
+                response = self._login("flex@example.com", password=password)
+                self.assertEqual(response.status_code, 200)
+                payload = _decode_jwt_payload(response.json()["access"])
+                self.assertEqual(payload["user_id"], str(user.id))
+
+    def test_username_beats_another_accounts_email_with_the_same_password(self):
+        # One account's username can equal another's email; with both
+        # passwords identical, the literal username match wins.
+        User.objects.create_user(username="someone-else", email="flex-user", password="pw12345!")
+
+        payload = _decode_jwt_payload(self._login("flex-user").json()["access"])
+        self.assertEqual(payload["user_id"], str(self.user.id))
+
+    def test_inactive_account_sharing_an_email_does_not_block_the_active_one(self):
+        User.objects.create_user(
+            username="old-flex", email="flex@example.com", password="pw12345!", is_active=False
+        )
+        payload = _decode_jwt_payload(self._login("flex@example.com").json()["access"])
+        self.assertEqual(payload["user_id"], str(self.user.id))
+
 
 @locmem_cache
 class OperatorViewSetTest(TestCase):
