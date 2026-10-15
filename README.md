@@ -101,3 +101,4 @@ Request flow for the two events that matter: the van enters or leaves a geofence
 ```bash
 docker compose exec django python manage.py test
 ```
+[![Tests](https://github.com/elperroloc0/GinaGymnastics/actions/workflows/tests.yml/badge.svg)](https://github.com/elperroloc0/GinaGymnastics/actions/workflows/tests.yml)
